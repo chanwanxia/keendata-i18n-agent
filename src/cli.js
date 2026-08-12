@@ -1,0 +1,214 @@
+const { loadAgentConfig, resolveProjectRoot } = require("./config");
+const { runAgent } = require("./runner");
+const kit = require("./kit");
+
+/**
+ * CLI 入口函数
+ * @param {string[]} argv - 命令行参数
+ */
+async function main(argv) {
+  const { command, flags } = parseArgs(argv);
+  if (isHelpCommand(command)) {
+    printHelp();
+    return;
+  }
+
+  if (command === "audit") {
+    process.exit(await auditCommand(flags));
+  }
+
+  const kitCommands = [
+    "init",
+    "profile",
+    "doctor",
+    "rules",
+    "preset",
+    "scan",
+    "apply",
+    "translate",
+    "validate",
+    "extract",
+    "compile",
+    "scaffold",
+    "inject",
+  ];
+  if (kitCommands.includes(command)) {
+    kit.main(argv);
+    return;
+  }
+
+  if (command !== "run") {
+    printHelp();
+    process.exitCode = 1;
+    return;
+  }
+
+  const projectRoot = resolveProjectRoot(flags.project);
+  const agentConfig = loadAgentConfig(projectRoot, flags);
+  const result = await runAgent(projectRoot, agentConfig, flags);
+
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    printResult(result);
+  }
+
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+/**
+ * 解析命令行参数
+ * @param {string[]} argv - 命令行参数
+ * @returns {object} { command, flags }
+ */
+function parseArgs(argv) {
+  const [command = "help", ...rest] = argv;
+  const flags = {};
+  const valueFlags = [
+    "--project",
+    "--provider",
+    "--appid-env",
+    "--appkey-env",
+    "--decision-mode",
+    "--max-steps",
+  ];
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const item = rest[i];
+
+    if (item === "--json") flags.json = true;
+    if (item === "--no-auto-init-config") flags.autoInitConfig = false;
+    if (item === "--no-auto-create-translation-file")
+      flags.autoCreateTranslationFile = false;
+    if (item === "--no-auto-scaffold") flags.autoScaffold = false;
+    if (item === "--no-auto-inject") flags.autoInject = false;
+
+    if (valueFlags.includes(item)) {
+      flags[item.replace(/^--/, "").replace(/-/g, "")] = rest[i + 1];
+      i += 1;
+    }
+  }
+
+  return { command, flags };
+}
+
+/**
+ * 执行审计命令
+ * @param {object} flags - 命令行标志
+ * @returns {number} 退出码
+ */
+async function auditCommand(flags) {
+  const projectRoot = resolveProjectRoot(flags.project);
+  const profile = kit.detectProjectProfile(projectRoot);
+  const config = kit.loadProjectConfig(projectRoot);
+
+  const report = {
+    projectRoot,
+    scan: kit.scanHardcodedChinese(projectRoot, config),
+    doctor: kit.inspectProjectSetup(projectRoot, profile, config),
+    validate: kit.validateTranslations(projectRoot, config),
+    generated: kit.inspectGeneratedFiles(projectRoot, config),
+  };
+
+  report.ok =
+    report.scan.summary.candidateCount === 0 &&
+    report.doctor.ok &&
+    report.validate.ok &&
+    report.generated.ok;
+
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    console.log(`[i18n-agent] 审计报告: ${projectRoot}`);
+    console.log(
+      `[i18n-agent] 未编译中文[scan] : ${report.scan.summary.candidateCount} 处`,
+    );
+    console.log(
+      `[i18n-agent] 基建检查[doctor]: ${report.doctor.summary.passCount} 通过, ${report.doctor.summary.warnCount} 警告, ${report.doctor.summary.failCount} 失败`,
+    );
+    console.log(
+      `[i18n-agent] 翻译检查[validate]: ${report.validate.summary.missingLanguageCount} 语言缺失, ${report.validate.summary.issueCount} 翻译问题`,
+    );
+    console.log(
+      `[i18n-agent] 产物完整: ${report.generated.ok ? "是" : "否"}`,
+    );
+    console.log(`[i18n-agent] 总体: ${report.ok ? "合规" : "不合规"}`);
+  }
+
+  return report.ok ? 0 : 1;
+}
+
+/**
+ * 打印执行结果
+ * @param {object} result - 执行结果
+ */
+function printResult(result) {
+  console.log(`[i18n-agent] 目标项目: ${result.projectRoot}`);
+  console.log(`[i18n-agent] 步骤数: ${result.stepCount}`);
+  console.log(`[i18n-agent] 结果: ${result.ok ? "成功" : "失败"}`);
+  console.log(`[i18n-agent] 说明: ${result.message}`);
+  console.log("[i18n-agent] 执行轨迹:");
+  result.timeline.forEach((item) => {
+    console.log(`  - [${item.step}] ${item.action}: ${item.reason}`);
+  });
+}
+
+/**
+ * 打印帮助信息
+ */
+function printHelp() {
+  console.log(`
+keendata-i18n-agent
+
+用法:
+  npx keendata-i18n-agent run [flags]
+  npx keendata-i18n-agent audit [flags]
+
+命令:
+  run        执行 i18n agent 全流程（scaffold → inject → scan → apply → extract → translate → compile）
+  audit      审计项目国际化合规性
+  scaffold   写入 i18n 基础设施文件（languages 目录、mixin、样式等）
+  inject     向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码
+  scan       扫描疑似未国际化中文
+  apply      自动改写可安全处理的文案（--dry-run 预览）
+  doctor     按 preset 检查 i18n 基建
+  translate  自动补齐 default.json 中缺失的翻译
+  validate   校验翻译完整性与正确性
+  extract    执行词条提取命令
+  compile    执行语言包编译命令
+  profile    探测目标项目的 i18n 接入画像
+  init       输出或写入配置模板
+
+常用参数:
+  --project PATH                        指定目标项目路径（默认当前目录）
+  --json                                输出 JSON，便于 CI 或外层 agent 解析
+  --provider NAME                       翻译 provider，可选 llm / glossary / baidu / command
+  --appid-env ENV                       百度翻译 appid 的环境变量名
+  --appkey-env ENV                      百度翻译 appkey 的环境变量名
+  --decision-mode MODE                  决策模式，可选 rule / llm
+  --max-steps N                         最大决策步数
+  --no-auto-init-config                 禁止自动写入 i18n-kit.config.json
+  --no-auto-create-translation-file     禁止自动创建翻译源文件
+  --no-auto-scaffold                    禁止自动 scaffold 基础设施文件
+  --no-auto-inject                      禁止自动注入 main.js / vue.config.js / App.vue
+
+示例:
+  npx keendata-i18n-agent run
+  npx keendata-i18n-agent run --project /path/to/repo
+  OPENAI_API_KEY=xxx npx keendata-i18n-agent run --project /path/to/repo
+  npx keendata-i18n-agent audit --project /path/to/repo --json
+`);
+}
+
+/**
+ * 判断是否为帮助命令
+ * @param {string} command - 命令名称
+ * @returns {boolean} 是否为帮助命令
+ */
+function isHelpCommand(command) {
+  return ["help", "--help", "-h"].includes(command);
+}
+
+module.exports = {
+  main,
+};

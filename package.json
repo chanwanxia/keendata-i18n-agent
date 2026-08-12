@@ -1,0 +1,23 @@
+{
+  "name": "keendata-i18n-agent",
+  "version": "0.2.0",
+  "description": "One-command i18n automation for KeenData Vue2 projects",
+  "main": "src/index.js",
+  "bin": {
+    "keendata-i18n-agent": "bin/keendata-i18n-agent.js",
+    "keendata-i18n-kit": "bin/keendata-i18n-agent.js"
+  },
+  "dependencies": {
+    "@babel/generator": "^7.28.0",
+    "@babel/parser": "^7.28.0",
+    "@babel/traverse": "^7.28.0",
+    "@babel/types": "^7.28.0"
+  },
+  "scripts": {
+    "dev:help": "node bin/keendata-i18n-agent.js help",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
