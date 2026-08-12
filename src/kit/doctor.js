@@ -275,7 +275,9 @@ function checkScripts(projectRoot) {
 function checkGlobalCli() {
   const { spawnSync } = require("child_process");
   const result = spawnSync("voerkai18n", ["--version"], { encoding: "utf8", shell: true, timeout: 10000 });
-  const output = result.stdout || "";
+  // voerkai18n --version 输出含 ANSI 颜色码，需先剥离再匹配版本号
+  const rawOutput = result.stdout || "";
+  const output = rawOutput.replace(/\x1b\[[0-9;]*m/g, "");
   const match = output.match(/installed:\s*(\d+\.\d+\.\d+)/);
   if (!match) {
     return createCheck("global-cli", "fail", "未检测到全局 voerkai18n", {

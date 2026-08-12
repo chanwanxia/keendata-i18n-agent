@@ -82,7 +82,9 @@ function checkGlobalCliVersion() {
   });
 
   const output = result.stdout || "";
-  const match = output.match(/installed:\s*(\d+\.\d+\.\d+)/);
+  // voerkai18n --version 输出含 ANSI 颜色码，需先剥离再匹配版本号
+  const stripped = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const match = stripped.match(/installed:\s*(\d+\.\d+\.\d+)/);
 
   if (!match) {
     return {
@@ -129,9 +131,27 @@ function injectPackageJson(projectRoot, options = {}) {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
   const added = [];
 
+  /**
+   * 检查依赖是否已存在于另一个 section 中，避免重复添加
+   * @param {string} name - 依赖名
+   * @param {string} currentSection - 当前要写入的 section
+   * @returns {boolean} 是否已存在于另一个 section
+   */
+  function existsInOtherSection(name, currentSection) {
+    const otherSection =
+      currentSection === "dependencies" ? "devDependencies" : "dependencies";
+    return Boolean(
+      pkg[otherSection] && pkg[otherSection][name]
+    );
+  }
+
   ["dependencies", "devDependencies", "scripts"].forEach((section) => {
     if (!pkg[section]) pkg[section] = {};
     Object.entries(REQUIRED_DEPS[section]).forEach(([name, value]) => {
+      // scripts 不做跨 section 去重；依赖项若已在另一 section 中则跳过
+      if (section !== "scripts" && existsInOtherSection(name, section)) {
+        return;
+      }
       if (!pkg[section][name] || (options.force && pkg[section][name] !== value)) {
         pkg[section][name] = value;
         added.push(`${section}.${name}`);
@@ -413,10 +433,19 @@ function injectAcceptLanguage(projectRoot, options = {}) {
   config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];
   config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";`;
 
-    const interceptorPattern = /(interceptors\.request\.use\(\s*[^,]+,?\s*\(([^)]*)\)\s*=>\s*\{)/;
+    // 匹配 interceptors.request.use 后的第一个回调（成功处理器）的开括号 {
+    // 支持 (config) => { 和 function(config) { 两种写法
+    // 不使用 [^,]+ 跳过到第二个回调，避免误注入到 error handler
+    const interceptorPattern =
+      /(interceptors\.request\.use\(\s*(?:\(([^)]*)\)\s*=>|function\s*\(([^)]*)\))\s*\{)/;
 
-    if (interceptorPattern.test(content)) {
-      const newContent = content.replace(interceptorPattern, "$1" + headerInjection);
+    const match = content.match(interceptorPattern);
+    if (match) {
+      const insertPos = match.index + match[0].length;
+      const newContent =
+        content.slice(0, insertPos) +
+        headerInjection +
+        content.slice(insertPos);
       fs.writeFileSync(filePath, newContent, "utf8");
       injected = true;
       return { updated: true, file: path.join("src/utils", file) };

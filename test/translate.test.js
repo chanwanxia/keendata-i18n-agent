@@ -55,13 +55,13 @@ test("glossary provider 填充已知术语", async () => {
   assert.ok(translations["未知文本"].en === "", "未知文本应保持为空");
 });
 
-test("OPENAI_API_KEY 未设置时回退 glossary", async () => {
+test("LLM_API_KEY 未设置时回退 glossary", async () => {
   const projectRoot = createTempProject({
     测试: { en: "", jp: "", ar: "" },
   });
 
-  const oldKey = process.env.OPENAI_API_KEY;
-  delete process.env.OPENAI_API_KEY;
+  const oldKey = process.env.LLM_API_KEY;
+  delete process.env.LLM_API_KEY;
 
   const { translateTranslations } = require("../src/kit/translate");
   const result = await translateTranslations(
@@ -72,7 +72,7 @@ test("OPENAI_API_KEY 未设置时回退 glossary", async () => {
 
   assert.ok(result.provider.used === "glossary", "应回退到 glossary");
 
-  if (oldKey) process.env.OPENAI_API_KEY = oldKey;
+  if (oldKey) process.env.LLM_API_KEY = oldKey;
 });
 
 test("占位符校验检测不匹配", async () => {

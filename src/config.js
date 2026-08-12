@@ -4,18 +4,18 @@ const path = require("path");
 const AGENT_CONFIG_FILE = "i18n-agent.config.json";
 
 const DEFAULT_AGENT_CONFIG = {
-  decisionMode: "rule",
-  maxSteps: 20,
+  decisionMode: "llm",
+  maxSteps: 50,
   autoInitConfig: true,
   autoCreateTranslationFile: true,
   autoScaffold: true,
   autoInject: true,
   llm: {
-    provider: "openai-compatible",
-    apiKeyEnv: "OPENAI_API_KEY",
-    baseUrlEnv: "OPENAI_BASE_URL",
-    modelEnv: "OPENAI_MODEL",
-    defaultModel: "gpt-4.1-mini",
+    apiKeyEnv: "LLM_API_KEY",
+    baseUrlEnv: "LLM_BASE_URL",
+    modelEnv: "LLM_MODEL",
+    defaultBaseUrl: "http://router.keendata.net:5343/v1",
+    defaultModel: "gpt-5.5",
   },
 };
 
@@ -54,6 +54,8 @@ function loadAgentConfig(projectRoot, flags = {}) {
 
   if (flags.decisionMode) merged.decisionMode = flags.decisionMode;
   if (typeof flags.maxSteps === "number") merged.maxSteps = flags.maxSteps;
+  if (typeof flags.maxToolCalls === "number")
+    merged.maxSteps = flags.maxToolCalls;
   if (typeof flags.autoInitConfig === "boolean") merged.autoInitConfig = flags.autoInitConfig;
   if (typeof flags.autoCreateTranslationFile === "boolean") merged.autoCreateTranslationFile = flags.autoCreateTranslationFile;
   if (typeof flags.autoScaffold === "boolean") merged.autoScaffold = flags.autoScaffold;

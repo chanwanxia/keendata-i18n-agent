@@ -266,7 +266,7 @@ template 变换仍用正则（因为 Vue2 template 不是标准 JS，无法直�
 
 - `OPENAI_API_KEY`（必需，否则回退 glossary）
 - `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）
-- `OPENAI_MODEL`（默认 `gpt-4.1-mini`）
+- `OPENAI_MODEL`（默认 `gpt-5.5`）
 
 ### API 调用
 
@@ -432,7 +432,7 @@ npx keendata-i18n-agent run --project /path/to/repo --json
 - `@voerkai18n/cli` 全局安装版本必须为 `2.1.13`（v3 不兼容）
 - package.json 依赖注入后需用户手动执行 `pnpm install`（agent 不自动执行）
 - 全局 CLI 需用户手动安装：`pnpm add -g @voerkai18n/cli@2.1.13`
-- LLM 翻译默认 `gpt-4.1-mini`，可通过 `OPENAI_MODEL` 覆盖
+- LLM 翻译默认 `gpt-5.5`，可通过 `OPENAI_MODEL` 覆盖
 - `OPENAI_API_KEY` 未设置时 translate 回退 glossary 并警告
 - 代码修改后执行 `pnpm lint fix`
 - 新增方法必须补充功能注释

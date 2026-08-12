@@ -6,6 +6,7 @@ const {
   validateTranslationObject,
   extractPlaceholders,
 } = require("./validate");
+const { OpenAI } = require("openai");
 
 // voerkai18n 运行时占位符正则，与 validate.js 保持一致
 const VOERKAI18N_PLACEHOLDER_REGEX =
@@ -331,14 +332,14 @@ function applyGlossaryPostProcess(
  * @returns {object} 翻译结果报告
  */
 async function runLlmTranslate(projectRoot, config, options) {
-  const apiKey = process.env["OPENAI_API_KEY"];
+  const apiKey = process.env["LLM_API_KEY"];
   if (!apiKey) {
-    console.warn("[i18n-kit] OPENAI_API_KEY 未设置，回退到 glossary 模式");
+    console.warn("[i18n-kit] LLM_API_KEY 未设置，回退到 glossary 模式");
     return { ok: true, used: "glossary", executed: false };
   }
 
-  const baseUrl = process.env["OPENAI_BASE_URL"] || "https://api.openai.com/v1";
-  const model = process.env["OPENAI_MODEL"] || "gpt-4.1-mini";
+  const baseUrl = process.env["LLM_BASE_URL"] || "http://router.keendata.net:5343/v1";
+  const model = process.env["LLM_MODEL"] || "gpt-5.5";
   const translationPath = path.join(projectRoot, config.translationFile);
 
   if (!fs.existsSync(translationPath)) {
@@ -439,6 +440,7 @@ async function callLlmTranslate(
   baseUrl,
   model,
 ) {
+  const client = new OpenAI({ baseURL: baseUrl, apiKey });
   const systemMessage =
     "你是翻译引擎。将中文翻译为指定语言，保持 {} 占位符不变，遵循术语表。只返回 JSON。";
   const userMessage = JSON.stringify({
@@ -449,29 +451,17 @@ async function callLlmTranslate(
       '返回 JSON: { "translations": [{ "source": "中文", "en": "English", "jp": "日本語", "ar": "العربية" }] }',
   });
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-    }),
+  const response = await client.chat.completions.create({
+    model,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: systemMessage },
+      { role: "user", content: userMessage },
+    ],
   });
 
-  if (!response.ok) {
-    throw new Error(`LLM API 返回 ${response.status}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
+  const content = response.choices?.[0]?.message?.content || "{}";
   const parsed = JSON.parse(content);
   return parsed.translations || [];
 }

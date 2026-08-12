@@ -11,13 +11,26 @@
     "@babel/generator": "^7.28.0",
     "@babel/parser": "^7.28.0",
     "@babel/traverse": "^7.28.0",
-    "@babel/types": "^7.28.0"
+    "@babel/types": "^7.28.0",
+    "openai": "^7.4.0",
+    "@voerkai18n/runtime": "^2.1.13",
+    "@voerkai18n/vue2": "^2.1.13"
   },
   "scripts": {
     "dev:help": "node bin/keendata-i18n-agent.js help",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "i18n:extract": "voerkai18n extract -D && prettier --write src/languages/*.*",
+    "i18n:compile": "voerkai18n compile && prettier --write src/languages/*.*"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@voerkai18n/cli": "^2.1.13",
+    "voerkai18n-loader": "^2.1.13",
+    "postcss": "^8.5.14",
+    "postcss-rtlcss": "^6.0.0",
+    "postcss-html": "^1.8.1",
+    "postcss-scss": "^4.0.9"
   }
 }

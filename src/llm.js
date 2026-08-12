@@ -1,79 +1,52 @@
 /**
- * 创建 LLM 决策客户端，用于 agent 决策模式
- * @param {object} agentConfig - agent 配置
- * @returns {object|null} LLM 客户端或 null（未启用时）
+ * LLM 客户端工厂模块
+ * 旧的决策确认器已废弃，agent 决策由 src/agent/ 模块接管。
+ * 本模块保留为 translate.js 等 kit 内部模块提供 LLM 客户端创建能力。
  */
-function createLlmClient(agentConfig) {
-  if (agentConfig.decisionMode !== "llm") return null;
 
-  const llmConfig = agentConfig.llm || {};
-  const apiKey = process.env[llmConfig.apiKeyEnv || "OPENAI_API_KEY"];
-  if (!apiKey) return null;
-
-  const baseUrl = process.env[llmConfig.baseUrlEnv || "OPENAI_BASE_URL"] || "https://api.openai.com/v1";
-  const model =
-    process.env[llmConfig.modelEnv || "OPENAI_MODEL"] || llmConfig.defaultModel || "gpt-4.1-mini";
-
-  return {
-    async decide(input) {
-      const prompt = buildDecisionPrompt(input);
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0,
-          response_format: {
-            type: "json_object",
-          },
-          messages: [
-            {
-              role: "system",
-              content:
-                "你是国际化自动化 agent 的决策器。只能从 allowedActions 中选择一个 action，并返回 JSON：{\"action\":\"...\",\"reason\":\"...\"}",
-            },
-            {
-              role: "user",
-              content: prompt,
-            },
-          ],
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`LLM 调用失败: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || "{}";
-      const parsed = JSON.parse(content);
-      return {
-        action: parsed.action,
-        reason: parsed.reason || "",
-      };
-    },
-  };
-}
+const { OpenAI } = require("openai");
 
 /**
- * 构建 LLM 决策提示词
- * @param {object} input - 输入对象 { allowedActions, suggestedAction, state }
- * @returns {string} JSON 格式的提示词
+ * 创建 OpenAI 兼容的 LLM 客户端（指向公司模型路由）
+ * @param {object} agentConfig - agent 配置，含 llm 字段
+ * @returns {object|null} LLM 客户端或 null（未配置 API Key 时）
  */
-function buildDecisionPrompt(input) {
-  return JSON.stringify(
-    {
-      goal: "让目标项目国际化流程尽量自动执行到可验证结束",
-      allowedActions: input.allowedActions,
-      suggestedAction: input.suggestedAction,
-      state: input.state,
+function createLlmClient(agentConfig) {
+  const llmConfig = agentConfig.llm || {};
+  const apiKeyEnv = llmConfig.apiKeyEnv || "LLM_API_KEY";
+  const baseUrlEnv = llmConfig.baseUrlEnv || "LLM_BASE_URL";
+  const modelEnv = llmConfig.modelEnv || "LLM_MODEL";
+
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) return null;
+
+  const baseURL =
+    process.env[baseUrlEnv] || llmConfig.defaultBaseUrl || "http://router.keendata.net:5343/v1";
+  const model =
+    process.env[modelEnv] || llmConfig.defaultModel || "gpt-5.5";
+
+  const client = new OpenAI({ baseURL, apiKey });
+
+  return {
+    client,
+    model,
+    /**
+     * 调用 chat completions 接口
+     * @param {object} options - { messages, tools, temperature, responseFormat }
+     * @returns {object} API 响应
+     */
+    async chat(options) {
+      return client.chat.completions.create({
+        model,
+        temperature: options.temperature ?? 0,
+        messages: options.messages,
+        ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.responseFormat
+          ? { response_format: options.responseFormat }
+          : {}),
+      });
     },
-    null,
-    2,
-  );
+  };
 }
 
 module.exports = {

@@ -12,6 +12,7 @@ const {
 const { inspectProjectSetup } = require("./doctor");
 const { inject, checkGlobalCliVersion, injectPackageJson, injectMainJs, injectVueConfig, injectAppVue, injectAcceptLanguage } = require("./inject");
 const { runShellCommand } = require("./shell");
+const { runShellCommandCaptured } = require("./shell");
 const { scaffold, ensurePostcssConfig } = require("./scaffold");
 const { scanHardcodedChinese } = require("./scan");
 const { translateTranslations } = require("./translate");
@@ -45,6 +46,7 @@ module.exports = {
   main,
   resolveProjectRoot,
   runShellCommand,
+  runShellCommandCaptured,
   scaffold,
   scanHardcodedChinese,
   translateTranslations,

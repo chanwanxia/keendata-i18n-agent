@@ -43,9 +43,16 @@ async function main(argv) {
     return;
   }
 
-  const projectRoot = resolveProjectRoot(flags.project);
-  const agentConfig = loadAgentConfig(projectRoot, flags);
-  const result = await runAgent(projectRoot, agentConfig, flags);
+const projectRoot = resolveProjectRoot(flags.project);
+const agentConfig = loadAgentConfig(projectRoot, flags);
+
+  if (flags.resetKey) {
+    const { clearCredentials } = require("./credentials");
+    clearCredentials();
+    console.log("[i18n-agent] 已清除保存的 API Key，下次运行将重新提示输入。");
+  }
+
+const result = await runAgent(projectRoot, agentConfig, flags);
 
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -71,7 +78,15 @@ function parseArgs(argv) {
     "--appkey-env",
     "--decision-mode",
     "--max-steps",
+    "--max-tool-calls",
   ];
+
+  /** 将 --kebab-case 转为 camelCase */
+  const toCamel = (s) =>
+    s.replace(/^--/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+
+  /** 需要解析为数字的 flag */
+  const numericFlags = new Set(["--max-steps", "--max-tool-calls"]);
 
   for (let i = 0; i < rest.length; i += 1) {
     const item = rest[i];
@@ -81,10 +96,13 @@ function parseArgs(argv) {
     if (item === "--no-auto-create-translation-file")
       flags.autoCreateTranslationFile = false;
     if (item === "--no-auto-scaffold") flags.autoScaffold = false;
-    if (item === "--no-auto-inject") flags.autoInject = false;
+   if (item === "--no-auto-inject") flags.autoInject = false;
+    if (item === "--reset-key") flags.resetKey = true;
 
     if (valueFlags.includes(item)) {
-      flags[item.replace(/^--/, "").replace(/-/g, "")] = rest[i + 1];
+      const key = toCamel(item);
+      const value = rest[i + 1];
+      flags[key] = numericFlags.has(item) ? Number(value) : value;
       i += 1;
     }
   }
@@ -185,9 +203,11 @@ keendata-i18n-agent
   --provider NAME                       翻译 provider，可选 llm / glossary / baidu / command
   --appid-env ENV                       百度翻译 appid 的环境变量名
   --appkey-env ENV                      百度翻译 appkey 的环境变量名
-  --decision-mode MODE                  决策模式，可选 rule / llm
+  --decision-mode MODE                  决策模式，可选 llm（默认，LLM 驱动）/ rule（旧规则引擎回退）
   --max-steps N                         最大决策步数
-  --no-auto-init-config                 禁止自动写入 i18n-kit.config.json
+ --max-tool-calls N                    最大工具调用次数（--max-steps 的别名）
+  --reset-key                           清除保存的 LLM API Key，下次运行重新输入
+ --no-auto-init-config                 禁止自动写入 i18n-kit.config.json
   --no-auto-create-translation-file     禁止自动创建翻译源文件
   --no-auto-scaffold                    禁止自动 scaffold 基础设施文件
   --no-auto-inject                      禁止自动注入 main.js / vue.config.js / App.vue
@@ -195,7 +215,8 @@ keendata-i18n-agent
 示例:
   npx keendata-i18n-agent run
   npx keendata-i18n-agent run --project /path/to/repo
-  OPENAI_API_KEY=xxx npx keendata-i18n-agent run --project /path/to/repo
+  LLM_API_KEY=xxx npx keendata-i18n-agent run --project /path/to/repo
+  npx keendata-i18n-agent run --decision-mode rule --project /path/to/repo
   npx keendata-i18n-agent audit --project /path/to/repo --json
 `);
 }

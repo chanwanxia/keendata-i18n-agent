@@ -2,16 +2,23 @@ const fs = require("fs");
 const path = require("path");
 const kit = require("./kit");
 const { decideNextAction } = require("./policy");
+const { runAgent: runLlmAgent } = require("./agent");
 const { createLlmClient } = require("./llm");
 
 /**
- * 执行 agent 全流程
+* 执行 agent 全流程
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} agentConfig - agent 配置
  * @param {object} flags - 命令行标志
  * @returns {object} 执行结果
  */
 async function runAgent(projectRoot, agentConfig, flags = {}) {
+  // LLM 模式：委托给 agent 模块，由 tool-calling loop 驱动
+  if (agentConfig.decisionMode !== "rule") {
+    return runLlmAgent(projectRoot, agentConfig, flags);
+  }
+
+  // rule 模式：保留旧的规则引擎 + executeAction 逻辑
   const llmClient = createLlmClient(agentConfig);
   const state = createInitialState(projectRoot, agentConfig, flags);
 
