@@ -43,8 +43,8 @@ async function main(argv) {
     return;
   }
 
-const projectRoot = resolveProjectRoot(flags.project);
-const agentConfig = loadAgentConfig(projectRoot, flags);
+  const projectRoot = resolveProjectRoot(flags.project);
+  const agentConfig = loadAgentConfig(projectRoot, flags);
 
   if (flags.resetKey) {
     const { clearCredentials } = require("./credentials");
@@ -52,7 +52,7 @@ const agentConfig = loadAgentConfig(projectRoot, flags);
     console.log("[i18n-agent] 已清除保存的 API Key，下次运行将重新提示输入。");
   }
 
-const result = await runAgent(projectRoot, agentConfig, flags);
+  const result = await runAgent(projectRoot, agentConfig, flags);
 
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -96,8 +96,9 @@ function parseArgs(argv) {
     if (item === "--no-auto-create-translation-file")
       flags.autoCreateTranslationFile = false;
     if (item === "--no-auto-scaffold") flags.autoScaffold = false;
-   if (item === "--no-auto-inject") flags.autoInject = false;
+    if (item === "--no-auto-inject") flags.autoInject = false;
     if (item === "--reset-key") flags.resetKey = true;
+    if (item === "--force") flags.force = true;
 
     if (valueFlags.includes(item)) {
       const key = toCamel(item);
@@ -147,9 +148,7 @@ async function auditCommand(flags) {
     console.log(
       `[i18n-agent] 翻译检查[validate]: ${report.validate.summary.missingLanguageCount} 语言缺失, ${report.validate.summary.issueCount} 翻译问题`,
     );
-    console.log(
-      `[i18n-agent] 产物完整: ${report.generated.ok ? "是" : "否"}`,
-    );
+    console.log(`[i18n-agent] 产物完整: ${report.generated.ok ? "是" : "否"}`);
     console.log(`[i18n-agent] 总体: ${report.ok ? "合规" : "不合规"}`);
   }
 
@@ -206,6 +205,7 @@ function printHelp() {
   --decision-mode MODE                  决策模式，可选 llm（默认，LLM 驱动）/ rule（旧规则引擎回退）
   --max-steps N                         最大决策步数
  --max-tool-calls N                    最大工具调用次数（--max-steps 的别名）
+  --force                               强制清空所有翻译重新翻译（用于修复占位式无效翻译）
   --reset-key                           清除保存的 LLM API Key，下次运行重新输入
  --no-auto-init-config                 禁止自动写入 i18n-kit.config.json
   --no-auto-create-translation-file     禁止自动创建翻译源文件

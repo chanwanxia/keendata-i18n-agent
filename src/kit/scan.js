@@ -140,6 +140,7 @@ function findUnwrappedChinese(line, excludedTexts = []) {
     /[\u3400-\u9fff]+[^\u3400-\u9fff\u0000-\u0027\u003b\u0040\u005b\u005d\u007b\u007d]*/g;
 
   const results = [];
+  let match;
   while ((match = chineseRegex.exec(line)) !== null) {
     const chineseText = match[0];
     const isExcluded = excludedTexts.some((excluded) =>

@@ -60,7 +60,7 @@ async function runAgentLoop(client, model, systemPrompt, tools, maxSteps) {
         let args;
         try {
           args = JSON.parse(toolCall.function.arguments || "{}");
-        } catch (parseErr) {
+        } catch (_parseErr) {
           args = {};
         }
         try {

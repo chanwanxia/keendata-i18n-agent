@@ -321,3 +321,205 @@ test("直接调用 RegExp() 中的中文字符串不被转换", () => {
     `RegExp() 中的中文不应被 t() 包裹，实际: ${result}`,
   );
 });
+
+test("三元模板字面量拆分为独立 t() 调用", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :title="\`已选\${isCheckDb ? '数据库' : '数据表'}列表\`"></div></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes("isCheckDb ? t('已选数据库列表') : t('已选数据表列表')"),
+    `应拆分为两个独立 t() 调用，实际: ${result}`,
+  );
+  assert.ok(!result.includes("{}"), `不应使用占位符，实际: ${result}`);
+});
+
+test("p-l 绑定属性拼接表达式转换为模板字面量", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-column-text :p-l="'tableName,' + '数据表'"></kd-column-text></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(":p-l=\"`tableName,${t('数据表')}`\""),
+    `应生成模板字面量格式，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("'tableName,' +"),
+    `不应保留字符串拼接，实际: ${result}`,
+  );
+});
+
+test("绑定属性中的 t() 调用使用单引号", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :title="\`你好\${name}\`"></div></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes("t('你好{}'"),
+    `绑定属性中应使用单引号，实际: ${result}`,
+  );
+ assert.ok(
+   !result.includes('t("你好{}"'),
+   `绑定属性中不应使用双引号，实际: ${result}`,
+ );
+});
+
+test("双重包裹的 t(t('...')) 被展开为 t('...') — 文本节点", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-button @click="onCancel">{{ t(t('取消')) }}</el-button></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    !result.includes("t(t("),
+    `双重包裹应被展开，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("t('取消')"),
+    `应保留单层 t('取消')，实际: ${result}`,
+  );
+});
+
+test("双重包裹的 t(t('...')) 被展开为 t('...') — 绑定属性", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><reason-popover-btn :btn-text="t(t('驳回'))"></reason-popover-btn></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    !result.includes("t(t("),
+    `双重包裹应被展开，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("t('驳回')"),
+    `应保留单层 t('驳回')，实际: ${result}`,
+  );
+});
+
+test("双重包裹的 this.t(this.t('...')) 被展开 — script 区域", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>export default { data() { return { msg: this.t(this.t("测试文案")) }; } }</script>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    !result.includes("this.t(this.t("),
+    `双重包裹应被展开，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('this.t("测试文案")'),
+    `应保留单层 this.t("测试文案")，实际: ${result}`,
+  );
+});
+
+test("三重嵌套 t(t(t('...'))) 被完全展开", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>{{ t(t(t('深层嵌套'))) }}</div></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    !result.includes("t(t("),
+    `三重嵌套应被完全展开，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("t('深层嵌套')"),
+    `应保留单层 t('深层嵌套')，实际: ${result}`,
+  );
+});
+
+test("绑定属性中的三元 + 模板字面量正确转换，不破坏标签结构", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-popover-button confirm-text="确认" :reference-text="selectionArr.length > 0 ? \`彻底删除 (\${selectionArr.length})\` : '彻底删除'" @confirm="toDel()"></kd-popover-button></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(":confirm-text=\"t('确认')\""),
+    `confirm-text 应转换为 t('确认')，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("t('彻底删除 ({})', selectionArr.length)"),
+    `模板字面量应转换为 t('彻底删除 ({})', ...)，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("t('彻底删除')"),
+    `字符串字面量应转换为 t('彻底删除')，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("@confirm=\"toDel()\""),
+    `@confirm 属性应保持原样，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("</kd-popover-button>"),
+    `闭合标签应保持原样，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("{{ t(\"0 ?"),
+    `不应将比较运算符 > 误识别为文本节点边界，实际: ${result}`,
+  );
+});
+
+test("绑定属性中比较运算符 > 不被误识别为文本节点边界", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :class="count > 0 ? '有数据' : '无数据'">{{ count > 0 ? '显示' : '隐藏' }}</div></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes("t('显示')"),
+    `mustache 中的中文应被转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("</div>"),
+    `标签结构应保持完整，实际: ${result}`,
+  );
+});

@@ -18,8 +18,7 @@ function createTools(projectRoot, config) {
   return [
     {
       name: "read_file",
-      description:
-        "读取目标项目中指定相对路径的文件内容。返回文件全文字符串。",
+      description: "读取目标项目中指定相对路径的文件内容。返回文件全文字符串。",
       parameters: {
         type: "object",
         properties: {
@@ -61,13 +60,16 @@ function createTools(projectRoot, config) {
         const filePath = path.join(projectRoot, args.relativePath);
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         fs.writeFileSync(filePath, args.content, "utf8");
-        return { relativePath: args.relativePath, written: true, bytes: args.content.length };
+        return {
+          relativePath: args.relativePath,
+          written: true,
+          bytes: args.content.length,
+        };
       },
     },
     {
       name: "list_files",
-      description:
-        "列出目标项目指定目录下的文件（递归）。可按扩展名过滤。",
+      description: "列出目标项目指定目录下的文件（递归）。可按扩展名过滤。",
       parameters: {
         type: "object",
         properties: {
@@ -107,11 +109,11 @@ function createTools(projectRoot, config) {
         };
       },
     },
-    {
-      name: "inject",
-      description:
-        "向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码。返回各文件注入状态。",
-      parameters: { type: "object", properties: {} },
+   {
+     name: "inject",
+     description:
+        "向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码。注入后自动执行 eslint --fix 修复格式。返回各文件注入状态。重复执行是幂等的：已注入的代码不会被重复注入。",
+     parameters: { type: "object", properties: {} },
       execute() {
         const profile = kit.detectProjectProfile(projectRoot);
         const report = kit.inject(projectRoot, profile, config);
@@ -147,11 +149,11 @@ function createTools(projectRoot, config) {
         };
       },
     },
-    {
-      name: "apply_i18n",
-      description:
-        "对目标项目执行 i18n 自动改写，将中文文案包裹为 t() 调用。基于 AST 操作，安全可靠。dryRun=true 时仅预览不写入。",
-      parameters: {
+   {
+     name: "apply_i18n",
+     description:
+        "对目标项目执行 i18n 自动改写，将中文文案包裹为 t() 调用。基于 AST 操作，安全可靠。写入后自动执行 eslint --fix 修复格式。dryRun=true 时仅预览不写入。重复执行是幂等的：已包裹的 t() 不会被重复包裹，嵌套 t(t(...)) 会被自动展开。",
+     parameters: {
         type: "object",
         properties: {
           dryRun: {
@@ -171,9 +173,23 @@ function createTools(projectRoot, config) {
           totalChangedFiles: report.changedFiles.length,
         };
       },
-    },
+   },
+   {
+     name: "cleanup_i18n",
+     description:
+       "清理已国际化代码中的常见问题：展开嵌套 t(t(...)) 为单层、移除重复 import、修复格式。用于重复 run 时的自动修复。",
+     parameters: { type: "object", properties: {} },
+     execute() {
+       const report = kit.cleanupI18n(projectRoot, config);
+       return {
+         ok: report.ok,
+         summary: report.summary,
+         cleanedFiles: report.cleanedFiles.slice(0, 20),
+       };
+     },
+   },
     {
-      name: "extract_entries",
+    name: "extract_entries",
       description:
         "执行词条提取命令（voerkai18n extract）。捕获 stdout 和 stderr 返回。",
       parameters: { type: "object", properties: {} },
@@ -194,19 +210,26 @@ function createTools(projectRoot, config) {
     {
       name: "translate_entries",
       description:
-        "自动补齐翻译源文件中缺失的翻译。provider 可选 glossary/llm/baidu/command。不传则用配置默认值。",
+        "自动补齐翻译源文件中缺失或无效的翻译。provider 可选 glossary/llm/baidu/command。force=true 时清空所有翻译重新翻译（用于修复占位式无效翻译）。",
       parameters: {
         type: "object",
         properties: {
           provider: {
             type: "string",
-            description: "翻译 provider：glossary（术语表）、llm（大模型翻译）、baidu（百度翻译）、command（自定义命令）",
+            description:
+              "翻译 provider：glossary（术语表）、llm（大模型翻译）、baidu（百度翻译）、command（自定义命令）",
+          },
+          force: {
+            type: "boolean",
+            description:
+              "是否强制清空所有翻译重新翻译，用于修复占位式无效翻译（如 Text 1）。默认 false。",
           },
         },
       },
       async execute(args) {
         const report = await kit.translateTranslations(projectRoot, config, {
           provider: args.provider,
+          force: Boolean(args.force),
         });
         return {
           ok: report.ok,
@@ -220,14 +243,17 @@ function createTools(projectRoot, config) {
     {
       name: "validate_translations",
       description:
-        "校验翻译源文件的完整性（缺失翻译）和正确性（占位符、字面量、源文残留）。返回问题列表（截断到前 30 条）。",
+        "校验翻译源文件的完整性（缺失翻译）和正确性（占位符、字面量、源文残留、占位式无效翻译）。返回问题列表（截断到前 30 条）。",
       parameters: { type: "object", properties: {} },
       execute() {
         const report = kit.validateTranslations(projectRoot, config);
         return {
           ok: report.ok,
           summary: report.summary,
-          missingLanguages: (report.missingLanguages || []).slice(0, VALIDATE_ISSUE_LIMIT),
+          missingLanguages: (report.missingLanguages || []).slice(
+            0,
+            VALIDATE_ISSUE_LIMIT,
+          ),
           issues: (report.issues || []).slice(0, VALIDATE_ISSUE_LIMIT),
           totalIssues: (report.issues || []).length,
         };
@@ -309,7 +335,10 @@ function collectFiles(currentPath, projectRoot, extension, files) {
     return;
   }
   if (extension && path.extname(currentPath) !== extension) return;
-  const relative = path.relative(projectRoot, currentPath).split(path.sep).join("/");
+  const relative = path
+    .relative(projectRoot, currentPath)
+    .split(path.sep)
+    .join("/");
   files.push(relative);
 }
 

@@ -237,7 +237,7 @@ function readLanguagesFromSettings(settingsPath) {
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
     const languages = (settings.languages || []).map((item) => item.name).filter(Boolean);
     return languages.length > 0 ? languages : DEFAULT_CONFIG.languages;
-  } catch (error) {
+  } catch (_error) {
     return DEFAULT_CONFIG.languages;
   }
 }

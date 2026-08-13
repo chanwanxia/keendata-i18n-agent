@@ -6,6 +6,9 @@ const path = require("path");
 const VOERKAI18N_PLACEHOLDER_REGEX =
   /\{\s*\w*\s*(?:\|\s*\w*\s*(?:\([^)]*\))?\s*)*\}/g;
 
+// 占位式无效翻译正则：匹配 "Text 1"、"テキスト 1"、"نص 1" 等 LLM 返回的占位符结果
+const PLACEHOLDER_TRANSLATION_REGEX = /^(Text|テキスト|نص|Texto|Texte)\s*\d+/i;
+
 /**
  * 校验翻译源文件的完整性（缺失翻译、占位符）和正确性（字面量保留、源文残留）
  * @param {string} projectRoot - 项目根路径
@@ -60,6 +63,17 @@ function validateTranslationObject(translations, config) {
         missingLanguages.push({
           key: sourceText,
           language: lang,
+        });
+        return;
+      }
+
+      // 0. 占位式翻译检查（如 "Text 1"、"テキスト 1" 等 LLM 无效结果）
+      if (isPlaceholderTranslation(translatedText)) {
+        issues.push({
+          type: "placeholder_translation",
+          key: sourceText,
+          language: lang,
+          translatedText,
         });
         return;
       }
@@ -226,6 +240,16 @@ function isPlaceholderCompatible(
   );
 }
 
+/**
+ * 检测翻译结果是否为占位式无效翻译
+ * 匹配 "Text 123"、"テキスト 123"、"نص 123" 等模式
+ * @param {string} value - 翻译结果
+ * @returns {boolean} 是否为占位式翻译
+ */
+function isPlaceholderTranslation(value) {
+  return PLACEHOLDER_TRANSLATION_REGEX.test(value.trim());
+}
+
 module.exports = {
   inspectGeneratedFiles,
   extractPlaceholders,
@@ -233,6 +257,7 @@ module.exports = {
   checkLiteralPreservation,
   checkSourceTextLeakage,
   isPlaceholderCompatible,
+  isPlaceholderTranslation,
   validateTranslations,
   validateTranslationObject,
 };

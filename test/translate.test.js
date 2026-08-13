@@ -195,3 +195,26 @@ test("源文残留检查检测未翻译中文", () => {
   );
   assert.ok(withSysVar === null, "系统变量内的中文不应误报");
 });
+
+test("占位式无效翻译被 validate 检测为问题", () => {
+  const { validateTranslationObject } = require("../src/kit/validate");
+  const config = { languages: ["zh", "en", "jp", "ar"] };
+  const translations = {
+    只读: { en: "Text 1", jp: "テキスト 1", ar: "نص 1" },
+    用户: { en: "User", jp: "ユーザー", ar: "المستخدم" },
+  };
+  const report = validateTranslationObject(translations, config);
+  assert.strictEqual(report.ok, false);
+  assert.strictEqual(report.issues.length, 3);
+  assert.strictEqual(report.issues[0].type, "placeholder_translation");
+});
+
+test("isPlaceholderTranslation 检测多种语言的占位式翻译", () => {
+  const { isPlaceholderTranslation } = require("../src/kit/validate");
+  assert.strictEqual(isPlaceholderTranslation("Text 1"), true);
+  assert.strictEqual(isPlaceholderTranslation("テキスト 1"), true);
+  assert.strictEqual(isPlaceholderTranslation("نص 1"), true);
+  assert.strictEqual(isPlaceholderTranslation("Read Only"), false);
+  assert.strictEqual(isPlaceholderTranslation("Delete succeeded"), false);
+  assert.strictEqual(isPlaceholderTranslation(""), false);
+});

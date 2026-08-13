@@ -1,4 +1,6 @@
 const { applyI18n } = require("./apply");
+const { cleanupI18n } = require("./apply");
+const { runEslintFix, hasEslintConfig, isEslintAvailable } = require("./eslint");
 const { main } = require("./cli");
 const {
   buildSuggestedConfig,
@@ -26,6 +28,9 @@ const {
 
 module.exports = {
   applyI18n,
+  cleanupI18n,
+  hasEslintConfig,
+  isEslintAvailable,
   buildSuggestedConfig,
   checkGlobalCliVersion,
   CONFIG_FILE,
@@ -47,6 +52,7 @@ module.exports = {
   resolveProjectRoot,
   runShellCommand,
   runShellCommandCaptured,
+  runEslintFix,
   scaffold,
   scanHardcodedChinese,
   translateTranslations,

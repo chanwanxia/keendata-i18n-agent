@@ -5,6 +5,7 @@ const { runShellCommand } = require("./shell");
 const {
   validateTranslationObject,
   extractPlaceholders,
+  isPlaceholderTranslation,
 } = require("./validate");
 const { OpenAI } = require("openai");
 
@@ -16,7 +17,7 @@ const VOERKAI18N_PLACEHOLDER_REGEX =
  * 执行翻译流程：provider 翻译 + glossary 补齐 + 后处理校正
  * @param {string} projectRoot - 项目根路径
  * @param {object} config - i18n 配置
- * @param {object} options - { provider, appidEnv, appkeyEnv }
+ * @param {object} options - { provider, appidEnv, appkeyEnv, force }
  * @returns {object} 翻译报告
  */
 async function translateTranslations(projectRoot, config, options = {}) {
@@ -143,7 +144,7 @@ async function translateTranslations(projectRoot, config, options = {}) {
  * 根据 provider 类型执行对应翻译
  * @param {string} projectRoot - 项目根路径
  * @param {object} config - i18n 配置
- * @param {object} options - 选项
+ * @param {object} options - 选项 { provider, force, appidEnv, appkeyEnv }
  * @returns {object} provider 报告
  */
 async function runTranslateProvider(projectRoot, config, options) {
@@ -325,20 +326,21 @@ function applyGlossaryPostProcess(
 }
 
 /**
- * 使用 LLM (OpenAI 兼容 API) 批量翻译 default.json 中缺失的翻译
+ * 使用 LLM (OpenAI 兼容 API) 批量翻译 default.json 中缺失或无效的翻译
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} config - i18n 配置
- * @param {object} options - 选项
+ * @param {object} options - 选项 { force: boolean }
  * @returns {object} 翻译结果报告
  */
-async function runLlmTranslate(projectRoot, config, options) {
+async function runLlmTranslate(projectRoot, config, options = {}) {
   const apiKey = process.env["LLM_API_KEY"];
   if (!apiKey) {
     console.warn("[i18n-kit] LLM_API_KEY 未设置，回退到 glossary 模式");
     return { ok: true, used: "glossary", executed: false };
   }
 
-  const baseUrl = process.env["LLM_BASE_URL"] || "http://router.keendata.net:5343/v1";
+  const baseUrl =
+    process.env["LLM_BASE_URL"] || "http://router.keendata.net:5343/v1";
   const model = process.env["LLM_MODEL"] || "gpt-5.5";
   const translationPath = path.join(projectRoot, config.translationFile);
 
@@ -358,11 +360,29 @@ async function runLlmTranslate(projectRoot, config, options) {
     (preset && preset.rules.translation && preset.rules.translation.glossary) ||
     {};
 
+  // force 模式：清空所有非 glossary 翻译，强制重新翻译
+  if (options.force) {
+    Object.entries(translations).forEach(([, item]) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+      targetLanguages.forEach((lang) => {
+        if (typeof item[lang] === "string" && item[lang].trim() !== "") {
+          item[lang] = "";
+        }
+      });
+    });
+  }
+
+  // 检测需要翻译的条目：空翻译 + 占位式无效翻译（如 "Text 1"）
   const missingEntries = [];
   Object.entries(translations).forEach(([sourceText, item]) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return;
     targetLanguages.forEach((lang) => {
-      if (typeof item[lang] !== "string" || item[lang].trim() === "") {
+      const value = item[lang];
+      if (typeof value !== "string" || value.trim() === "") {
+        missingEntries.push({ sourceText, language: lang });
+      } else if (isPlaceholderTranslation(value)) {
+        // 占位式无效翻译，清空并标记为需要重新翻译
+        item[lang] = "";
         missingEntries.push({ sourceText, language: lang });
       }
     });
@@ -441,14 +461,30 @@ async function callLlmTranslate(
   model,
 ) {
   const client = new OpenAI({ baseURL: baseUrl, apiKey });
-  const systemMessage =
-    "你是翻译引擎。将中文翻译为指定语言，保持 {} 占位符不变，遵循术语表。只返回 JSON。";
+  const systemMessage = [
+    "你是一个专业的软件国际化翻译引擎。",
+    "你的任务：将给定的中文文本数组翻译为指定的目标语言。",
+    "",
+    "## 规则",
+    "1. 必须翻译 texts 数组中的每一条文本，不得遗漏任何一条。",
+    '2. 翻译必须基于中文原文的实际含义，不得使用 "Text"、"文本"、"نص" 等占位词加编号的形式。',
+    "3. 保持原文中的 {} 占位符不变（位置和数量必须一致）。",
+    "4. 遵循术语表（glossary）中的指定翻译。",
+    "5. 只返回 JSON，不要包含任何解释或额外文本。",
+    "",
+    "## 输出格式",
+    '返回 JSON: { "translations": [{ "source": "原始中文", "en": "English translation", "jp": "日本語訳", "ar": "الترجمة العربية" }] }',
+    "translations 数组的长度必须与输入 texts 数组相同，且 source 字段必须与原始中文完全一致。",
+  ].join("\n");
+
   const userMessage = JSON.stringify({
     glossary: glossary,
     targetLanguages: targetLanguages,
     texts: sourceTexts,
+    instruction:
+      "请翻译 texts 数组中的每一条中文文本到所有目标语言。source 字段必须与原文完全一致。",
     format:
-      '返回 JSON: { "translations": [{ "source": "中文", "en": "English", "jp": "日本語", "ar": "العربية" }] }',
+      '返回 JSON: { "translations": [{ "source": "中文原文", "en": "English", "jp": "日本語", "ar": "العربية" }] }',
   });
 
   const response = await client.chat.completions.create({
@@ -463,7 +499,20 @@ async function callLlmTranslate(
 
   const content = response.choices?.[0]?.message?.content || "{}";
   const parsed = JSON.parse(content);
-  return parsed.translations || [];
+  const translations = parsed.translations || [];
+
+  // 过滤掉占位式无效翻译（如 "Text 144"、"テキスト 144"、"نص 144"）
+  const validTranslations = translations.filter((result) => {
+    if (!result || !result.source) return false;
+    return targetLanguages.every((lang) => {
+      const value = result[lang];
+      if (typeof value !== "string" || value.trim() === "") return false;
+      if (isPlaceholderTranslation(value)) return false;
+      return true;
+    });
+  });
+
+  return validTranslations;
 }
 
 /**

@@ -6,7 +6,7 @@ const { runAgent: runLlmAgent } = require("./agent");
 const { createLlmClient } = require("./llm");
 
 /**
-* 执行 agent 全流程
+ * 执行 agent 全流程
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} agentConfig - agent 配置
  * @param {object} flags - 命令行标志
@@ -44,8 +44,15 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
       "stop",
     ];
 
-    const decision = await maybeDecideWithLlm(llmClient, state, suggestion, allowedActions);
-    const action = allowedActions.includes(decision.action) ? decision.action : suggestion.action;
+    const decision = await maybeDecideWithLlm(
+      llmClient,
+      state,
+      suggestion,
+      allowedActions,
+    );
+    const action = allowedActions.includes(decision.action)
+      ? decision.action
+      : suggestion.action;
     const reason = decision.reason || suggestion.reason;
     state.timeline.push({ step: state.stepCount, action, reason });
 
@@ -83,7 +90,9 @@ function createInitialState(projectRoot, agentConfig, flags) {
     timeline: [],
     bootstrap: {
       configReady: hasKitConfig,
-      translationFileReady: fs.existsSync(path.join(projectRoot, initialConfig.translationFile)),
+      translationFileReady: fs.existsSync(
+        path.join(projectRoot, initialConfig.translationFile),
+      ),
     },
     repairs: {
       glossaryRepairTried: false,
@@ -113,7 +122,12 @@ function createInitialState(projectRoot, agentConfig, flags) {
  * @param {string[]} allowedActions - 允许的动作列表
  * @returns {object} 决策结果
  */
-async function maybeDecideWithLlm(llmClient, state, suggestion, allowedActions) {
+async function maybeDecideWithLlm(
+  llmClient,
+  state,
+  suggestion,
+  allowedActions,
+) {
   if (!llmClient) return suggestion;
 
   try {
@@ -144,20 +158,30 @@ async function executeAction(action, state, flags) {
 
   if (action === "init_config") {
     if (!state.agentConfig.autoInitConfig) {
-      return { stop: true, ok: false, message: "缺少 i18n-kit.config.json，且 agent 未开启 autoInitConfig" };
+      return {
+        stop: true,
+        ok: false,
+        message: "缺少 i18n-kit.config.json，且 agent 未开启 autoInitConfig",
+      };
     }
 
     const profile = kit.detectProjectProfile(projectRoot);
     const config = kit.buildSuggestedConfig(profile);
     kit.writeProjectConfig(projectRoot, config, { force: false });
     state.bootstrap.configReady = true;
-    state.bootstrap.translationFileReady = fs.existsSync(path.join(projectRoot, config.translationFile));
+    state.bootstrap.translationFileReady = fs.existsSync(
+      path.join(projectRoot, config.translationFile),
+    );
     return null;
   }
 
   if (action === "create_translation_file") {
     if (!state.agentConfig.autoCreateTranslationFile) {
-      return { stop: true, ok: false, message: "缺少翻译源文件，且 agent 未开启 autoCreateTranslationFile" };
+      return {
+        stop: true,
+        ok: false,
+        message: "缺少翻译源文件，且 agent 未开启 autoCreateTranslationFile",
+      };
     }
 
     const config = kit.loadProjectConfig(projectRoot);
@@ -177,7 +201,9 @@ async function executeAction(action, state, flags) {
     const profile = kit.detectProjectProfile(projectRoot);
     const config = kit.loadProjectConfig(projectRoot);
     state.results.scaffold = kit.scaffold(projectRoot, profile, config);
-    console.log(`[i18n-agent] scaffold: 创建 ${state.results.scaffold.summary.createdCount} 个文件, 跳过 ${state.results.scaffold.summary.skippedCount} 个`);
+    console.log(
+      `[i18n-agent] scaffold: 创建 ${state.results.scaffold.summary.createdCount} 个文件, 跳过 ${state.results.scaffold.summary.skippedCount} 个`,
+    );
     return null;
   }
 
@@ -203,29 +229,48 @@ async function executeAction(action, state, flags) {
   }
 
   const config = kit.loadProjectConfig(projectRoot);
-  state.bootstrap.translationFileReady = fs.existsSync(path.join(projectRoot, config.translationFile));
+  state.bootstrap.translationFileReady = fs.existsSync(
+    path.join(projectRoot, config.translationFile),
+  );
 
   if (action === "doctor") {
     const profile = kit.detectProjectProfile(projectRoot);
-    state.results.doctor = kit.inspectProjectSetup(projectRoot, profile, config);
+    state.results.doctor = kit.inspectProjectSetup(
+      projectRoot,
+      profile,
+      config,
+    );
     return null;
   }
 
   if (action === "scan") {
     state.results.scan = kit.scanHardcodedChinese(projectRoot, config);
-    console.log(`[i18n-agent] scan: 发现 ${state.results.scan.summary.candidateCount} 处待国际化文案`);
+    console.log(
+      `[i18n-agent] scan: 发现 ${state.results.scan.summary.candidateCount} 处待国际化文案`,
+    );
     return null;
   }
 
-  if (action === "apply") {
-    state.results.apply = kit.applyI18n(projectRoot, config, { dryRun: false });
-    console.log(`[i18n-agent] apply: 改写 ${state.results.apply.summary.changedFileCount} 个文件, ${state.results.apply.summary.replacementCount} 处替换`);
-    return null;
-  }
+ if (action === "apply") {
+   // 先清理之前 run 可能遗留的问题（嵌套 t()、重复 import 等），保证幂等性
+   kit.cleanupI18n(projectRoot, config);
+   state.results.apply = kit.applyI18n(projectRoot, config, { dryRun: false });
+   console.log(
+     `[i18n-agent] apply: 改写 ${state.results.apply.summary.changedFileCount} 个文件, ${state.results.apply.summary.replacementCount} 处替换`,
+   );
+   return null;
+ }
 
   if (action === "extract") {
-    const status = kit.runShellCommand(config.extractCommand, projectRoot, "agent 执行词条提取");
-    state.results.extract = { ok: status === 0, command: config.extractCommand };
+    const status = kit.runShellCommand(
+      config.extractCommand,
+      projectRoot,
+      "agent 执行词条提取",
+    );
+    state.results.extract = {
+      ok: status === 0,
+      command: config.extractCommand,
+    };
     if (!state.results.extract.ok) {
       return { stop: true, ok: false, message: "extract 执行失败" };
     }
@@ -233,32 +278,53 @@ async function executeAction(action, state, flags) {
   }
 
   if (action === "translate") {
-    state.results.translate = await kit.translateTranslations(projectRoot, config, {
-      provider: flags.provider || (config.translate && config.translate.provider),
-      appidEnv: flags.appidEnv,
-      appkeyEnv: flags.appkeyEnv,
-    });
+    state.results.translate = await kit.translateTranslations(
+      projectRoot,
+      config,
+      {
+        provider:
+          flags.provider || (config.translate && config.translate.provider),
+        force: Boolean(flags.force),
+        appidEnv: flags.appidEnv,
+        appkeyEnv: flags.appkeyEnv,
+      },
+    );
     return null;
   }
 
   if (action === "glossary_repair") {
     state.repairs.glossaryRepairTried = true;
-    state.results.translate = await kit.translateTranslations(projectRoot, config, {
-      provider: "none",
-    });
+    state.results.translate = await kit.translateTranslations(
+      projectRoot,
+      config,
+      {
+        provider: "none",
+      },
+    );
     return null;
   }
 
   if (action === "validate") {
     const report = kit.validateTranslations(projectRoot, config);
     const generated = kit.inspectGeneratedFiles(projectRoot, config);
-    state.results.validate = { ...report, generated, ok: report.ok && generated.ok };
+    state.results.validate = {
+      ...report,
+      generated,
+      ok: report.ok && generated.ok,
+    };
     return null;
   }
 
   if (action === "compile") {
-    const status = kit.runShellCommand(config.compileCommand, projectRoot, "agent 执行语言包编译");
-    state.results.compile = { ok: status === 0, command: config.compileCommand };
+    const status = kit.runShellCommand(
+      config.compileCommand,
+      projectRoot,
+      "agent 执行语言包编译",
+    );
+    state.results.compile = {
+      ok: status === 0,
+      command: config.compileCommand,
+    };
     state.results.generated = kit.inspectGeneratedFiles(projectRoot, config);
     if (!state.results.compile.ok || !state.results.generated.ok) {
       return { stop: true, ok: false, message: "compile 执行失败或产物缺失" };

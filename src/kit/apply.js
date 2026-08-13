@@ -4,8 +4,10 @@ const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 const generate = require("@babel/generator").default;
 const t = require("@babel/types");
+const { parseComponent } = require("@vue/compiler-sfc");
 const { collectTargetFiles, toRelative } = require("./files");
 const { getPresetById } = require("./presets");
+const { runEslintFix } = require("./eslint");
 
 const DEFAULT_TEMPLATE_ATTRIBUTES = [
   "placeholder",
@@ -71,6 +73,19 @@ function applyI18n(projectRoot, config, options = {}) {
     });
   });
 
+  // 写入后自动执行 eslint --fix，修复 AST 生成引入的格式问题（多余空格等）
+  if (!options.dryRun && changedFiles.length > 0) {
+    const eslintResult = runEslintFix(
+      projectRoot,
+      changedFiles.map((f) => f.file),
+    );
+    if (eslintResult.fixedCount > 0) {
+      console.log(
+        `[i18n-apply] eslint --fix: 修复 ${eslintResult.fixedCount} 个文件`,
+      );
+    }
+  }
+
   return {
     ok: true,
     summary: {
@@ -118,6 +133,63 @@ function transformFile(source, filePath, relativePath, preset, config) {
  * @returns {object} 变换结果
  */
 function transformVueFile(source, preset, config) {
+  let changed = false;
+  let replacements = 0;
+  let code = source;
+
+  // 使用 @vue/compiler-sfc 的 parseComponent 正确切分 SFC 块，
+  // 避免正则匹配 <template> 时误匹配内层嵌套的 <template> 标签
+  let sfc;
+  try {
+    sfc = parseComponent(source);
+  } catch (_e) {
+    return transformVueFileFallback(source, preset, config);
+  }
+
+  if (sfc.template && sfc.template.content) {
+    // 注意：sfc.template.content 是编译器规范化后的内容，可能与源码不完全一致。
+    // 使用 start/end 位置从原始源码中提取真实内容，确保 code.replace 能正确匹配。
+    const templateContent =
+      sfc.template.start != null && sfc.template.end != null
+        ? source.slice(sfc.template.start, sfc.template.end)
+        : sfc.template.content;
+    const transformed = transformTemplate(templateContent, preset, config);
+    if (transformed.changed) {
+      changed = true;
+      replacements += transformed.replacements;
+      code = code.replace(templateContent, transformed.code);
+    }
+  }
+
+  if (sfc.script && sfc.script.content) {
+    // 同样使用 start/end 位置提取真实 script 内容
+    const scriptContent =
+      sfc.script.start != null && sfc.script.end != null
+        ? source.slice(sfc.script.start, sfc.script.end)
+        : sfc.script.content;
+    const transformed = transformJsFile(scriptContent, {
+      vueComponent: true,
+      preset,
+      config,
+    });
+    if (transformed.changed) {
+      changed = true;
+      replacements += transformed.replacements;
+      code = code.replace(scriptContent, transformed.code);
+    }
+  }
+
+  return { changed, replacements, code };
+}
+
+/**
+ * 正则回退方案：当 @vue/compiler-sfc 解析失败时使用
+ * @param {string} source - 源码
+ * @param {object} preset - 预设规则
+ * @param {object} config - i18n 配置
+ * @returns {object} 变换结果
+ */
+function transformVueFileFallback(source, preset, config) {
   let changed = false;
   let replacements = 0;
   let code = source;
@@ -181,6 +253,8 @@ function transformTemplate(source, preset, config) {
     (match, prefix, attrName, attrValue) => {
       if (!translateAttrs.has(attrName)) return match;
       if (attrName === "p-l") return match;
+      // 幂等性检查：已包含 t() 调用的属性值不再重复包裹
+      if (/\bt\s*\(/.test(attrValue)) return match;
       replacements += 1;
       return `${prefix}:${attrName}="${buildTranslateCallSource("t", attrValue, [], true)}"`;
     },
@@ -198,6 +272,16 @@ function transformTemplate(source, preset, config) {
     /(\s(?:(?::|v-bind:)[\w-]+))="([^"]*)"/g,
     (match, attrPrefix, expressionSource) => {
       const attrName = attrPrefix.replace(/^\s(?::|v-bind:)/, "");
+      // p-l 属性始终特殊处理，不受 translateAttrs 控制
+      if (attrName === "p-l") {
+        const p_lResult = transformPLAttribute(expressionSource);
+        if (p_lResult) {
+          replacements += p_lResult.replacements;
+          return `${attrPrefix}="${p_lResult.code}"`;
+        }
+        return match;
+      }
+
       if (!translateAttrs.has(attrName)) return match;
 
       const transformed = transformInlineExpression(
@@ -231,9 +315,13 @@ function transformTemplate(source, preset, config) {
   code = code.replace(
     /(?<!=)>([^<]*[\u3400-\u9fff][^<{}]*)</g,
     (match, rawText) => {
-      if (!rawText.trim()) return match;
-      if (rawText.includes("{{") || rawText.includes("}}")) return match;
-      replacements += 1;
+   if (!rawText.trim()) return match;
+   if (rawText.includes("{{") || rawText.includes("}}")) return match;
+   // 跳过跨越属性边界的匹配：rawText 中包含 " 说明匹配了属性值中的 > 比较运算符
+   if (rawText.includes('"')) return match;
+   // 幂等性检查：已包含 t() 调用的文本不再重复包裹
+   if (/\bt\s*\(/.test(rawText)) return match;
+    replacements += 1;
       const trimmed = rawText.trim();
       const leading = rawText.match(/^\s*/)[0];
       const trailing = rawText.match(/\s*$/)[0];
@@ -241,10 +329,11 @@ function transformTemplate(source, preset, config) {
     },
   );
 
+  const cleanedCode = unwrapNestedTranslateCalls(code);
   return {
-    changed: replacements > 0,
+    changed: replacements > 0 || cleanedCode !== code,
     replacements,
-    code,
+    code: cleanedCode,
   };
 }
 
@@ -331,6 +420,10 @@ function transformJsFile(source, options) {
   });
 
   if (patches.length === 0) {
+    const cleaned = unwrapNestedTranslateCalls(source);
+    if (cleaned !== source) {
+      return { changed: true, replacements: 0, code: cleaned };
+    }
     return { changed: false, replacements: 0, code: source };
   }
 
@@ -340,11 +433,145 @@ function transformJsFile(source, options) {
     code = injectTranslateImport(code);
   }
 
+  code = unwrapNestedTranslateCalls(code);
+
   return {
     changed: true,
     replacements: patches.length,
     code,
   };
+}
+
+/**
+ * 变换 p-l 绑定属性表达式，始终生成 `fieldName,${t('label')}` 格式的模板字面量
+ * 处理以下输入形式：
+ * - 'fieldName,' + t('中文')  → `fieldName,${t('中文')}`
+ * - 'fieldName,' + '中文'     → `fieldName,${t('中文')}`
+ * - t('中文')                  → `${t('中文')}`
+ * - `fieldName,${t('中文')}`   → 保持不变
+ * @param {string} expressionSource - 属性表达式源码
+ * @returns {object|null} 变换结果 { code, replacements } 或 null（不匹配 p-l 模式）
+ */
+function transformPLAttribute(expressionSource) {
+  const trimmed = expressionSource.trim();
+
+  // 已经是模板字面量格式，无需处理
+  if (trimmed.startsWith("`") && trimmed.endsWith("`")) return null;
+
+  let ast;
+  try {
+    ast = parser.parse(`(${trimmed})`, {
+      sourceType: "module",
+      plugins: JS_PARSE_PLUGINS,
+    });
+  } catch (_error) {
+    return null;
+  }
+
+  let result = null;
+  let replacements = 0;
+
+  traverse(ast, {
+    enter(pathRef) {
+      if (result) {
+        pathRef.skip();
+        return;
+      }
+
+      // 处理字符串拼接：'fieldName,' + t('中文') 或 'fieldName,' + '中文'
+      if (pathRef.isBinaryExpression({ operator: "+" })) {
+        const parts = flattenConcatenation(pathRef.node);
+        if (!parts) return;
+
+        const templateParts = [];
+        const exprParts = [];
+        let hasChinese = false;
+
+        parts.forEach((part) => {
+          if (t.isStringLiteral(part)) {
+            if (containsChinese(part.value)) {
+              templateParts.push(
+                "${" +
+                  buildTranslateCallSource("t", part.value, [], true) +
+                  "}",
+              );
+              exprParts.push(buildTranslateCallExpression("t", part.value));
+              replacements += 1;
+              hasChinese = true;
+            } else {
+              templateParts.push(part.value);
+            }
+            return;
+          }
+
+          // 已经是 t() 调用的部分保持不变
+          if (t.isCallExpression(part) && isTranslateCallee(part.callee)) {
+            const code = generate(part, {
+              jsescOption: { minimal: true },
+            }).code;
+            templateParts.push("${" + code + "}");
+            exprParts.push(part);
+            replacements += 1;
+            return;
+          }
+
+          // 其他表达式保持为插值
+          const code = generate(part, { jsescOption: { minimal: true } }).code;
+          templateParts.push("${" + code + "}");
+          exprParts.push(part);
+        });
+
+        if (!hasChinese && replacements === 0) return;
+
+        result = {
+          code: "`" + templateParts.join("") + "`",
+          replacements: Math.max(replacements, 1),
+        };
+        pathRef.skip();
+        return;
+      }
+
+      // 处理单独的 t('中文') 调用
+      if (
+        pathRef.isCallExpression() &&
+        isTranslateCallee(pathRef.node.callee)
+      ) {
+        const code = generate(pathRef.node, {
+          jsescOption: { minimal: true },
+        }).code;
+        result = {
+          code: "`${" + code + "}`",
+          replacements: 1,
+        };
+        pathRef.skip();
+        return;
+      }
+
+      // 处理单独的中文字符串字面量
+      if (
+        t.isStringLiteral(pathRef.node) &&
+        containsChinese(pathRef.node.value) &&
+        !pathRef.findParent(
+          (p) => p.isCallExpression() && isTranslateCallee(p.node.callee),
+        )
+      ) {
+        const callCode = buildTranslateCallSource(
+          "t",
+          pathRef.node.value,
+          [],
+          true,
+        );
+        result = {
+          code: "`${" + callCode + "}`",
+          replacements: 1,
+        };
+        pathRef.skip();
+        return;
+      }
+    },
+  });
+
+  return result;
 }
 
 /**
@@ -365,7 +592,7 @@ function transformInlineExpression(
       sourceType: "module",
       plugins: JS_PARSE_PLUGINS,
     });
-  } catch (error) {
+  } catch (_error) {
     return { changed: false, replacements: 0, code: expressionSource };
   }
 
@@ -387,8 +614,7 @@ function transformInlineExpression(
           patches.push({
             start: pathRef.node.start,
             end: pathRef.node.end,
-            code: generate(callExpression, { jsescOption: { minimal: true } })
-              .code,
+            code: generateCode(callExpression, singleQuote),
           });
           pathRef.skip();
           return;
@@ -404,8 +630,7 @@ function transformInlineExpression(
           patches.push({
             start: pathRef.node.start,
             end: pathRef.node.end,
-            code: generate(callExpression, { jsescOption: { minimal: true } })
-              .code,
+            code: generateCode(callExpression, singleQuote),
           });
           pathRef.skip();
           return;
@@ -424,7 +649,7 @@ function transformInlineExpression(
         patches.push({
           start: pathRef.node.start,
           end: pathRef.node.end,
-          code: generate(callExpr, { jsescOption: { minimal: true } }).code,
+          code: generateCode(callExpr, singleQuote),
         });
         pathRef.skip();
       }
@@ -501,6 +726,17 @@ function convertInterpolatedTemplateText(rawText) {
  * @returns {object|null} Babel CallExpression 或 null
  */
 function buildTranslateCallFromTemplateLiteral(node, translator) {
+  // 优先检测：如果模板中某个插值是三元表达式且分支为含中文字符串字面量，
+  // 拆分为两个独立的 t() 调用
+  for (let i = 0; i < node.expressions.length; i += 1) {
+    const splitCall = buildTernarySplitTranslateCall(
+      node,
+      node.expressions[i],
+      translator,
+    );
+    if (splitCall) return splitCall;
+  }
+
   const textParts = [];
   const args = [];
 
@@ -515,6 +751,50 @@ function buildTranslateCallFromTemplateLiteral(node, translator) {
   const text = textParts.join("");
   if (!containsChinese(text)) return null;
   return buildTranslateCallExpression(translator, text, args);
+}
+
+/**
+ * 当模板字面量中的插值表达式为三元条件表达式（a ? '中文1' : '中文2'）时，
+ * 将模板拆分为两个独立的 t() 调用：condition ? t('完整中文1') : t('完整中文2')
+ * @param {object} templateNode - 模板字面量节点
+ * @param {object} exprNode - 当前插值表达式节点
+ * @param {string} translator - 翻译函数名
+ * @returns {object|null} Babel ConditionalExpression 或 null
+ */
+function buildTernarySplitTranslateCall(templateNode, exprNode, translator) {
+  if (!t.isConditionalExpression(exprNode)) return null;
+  const { consequent, alternate } = exprNode;
+  if (!t.isStringLiteral(consequent) || !t.isStringLiteral(alternate))
+    return null;
+
+  // 找到当前表达式在模板中的位置索引
+  const exprIndex = templateNode.expressions.indexOf(exprNode);
+  if (exprIndex === -1) return null;
+
+  // 构建两个完整的中文字符串：将三元分支的值代入模板
+  const texts = [consequent.value, alternate.value].map((branchValue) => {
+    const parts = [];
+    templateNode.quasis.forEach((quasi, index) => {
+      parts.push(quasi.value.cooked || "");
+      if (index < templateNode.expressions.length) {
+        if (index === exprIndex) {
+          parts.push(branchValue);
+        } else {
+          parts.push("{}");
+        }
+      }
+    });
+    return parts.join("");
+  });
+
+  // 两个分支的文本都必须包含中文才进行拆分
+  if (!containsChinese(texts[0]) || !containsChinese(texts[1])) return null;
+
+  return t.conditionalExpression(
+    exprNode.test,
+    buildTranslateCallExpression(translator, texts[0]),
+    buildTranslateCallExpression(translator, texts[1]),
+  );
 }
 
 /**
@@ -585,6 +865,22 @@ function buildTranslateCallExpression(translator, text, args = []) {
       ? t.memberExpression(t.thisExpression(), t.identifier("t"))
       : t.identifier("t");
   return t.callExpression(callee, [t.stringLiteral(text), ...args]);
+}
+
+/**
+ * 使用 Babel 生成代码，当 singleQuote 为 true 时将 t() 中的双引号转为单引号
+ * 用于绑定属性上下文，避免双引号与属性值的双引号冲突
+ * @param {object} node - Babel AST 节点
+ * @param {boolean} singleQuote - 是否使用单引号
+ * @returns {string} 生成的代码
+ */
+function generateCode(node, singleQuote = false) {
+  const code = generate(node, {
+    jsescOption: { minimal: true },
+  }).code;
+  if (!singleQuote) return code;
+  // 将 t("...") 中的双引号替换为单引号，避免在双引号属性值中冲突
+  return code.replace(/(\bt(?:his\.t)?\()"((?:[^"\\]|\\.)*)"/g, "$1'$2'");
 }
 
 /**
@@ -727,16 +1023,30 @@ function isConsoleCallee(callee) {
 
 /**
  * 在 JS 文件顶部注入 import { t } from "@/languages"
+ * 幂等性：已有相同 import 时跳过；已有 @/languages import 但缺少 t 时补充 t
  * @param {string} source - 源码
  * @returns {string} 注入后的源码
  */
 function injectTranslateImport(source) {
-  if (
-    source.includes('from "@/languages"') ||
-    source.includes("from '@/languages'")
-  )
-    return source;
+  // 检查是否已存在 import { t } from "@/languages"
+  const tImportRegex = /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?/;
+  if (tImportRegex.test(source)) return source;
 
+  // 检查是否已有 from "@/languages" 但未导入 t —— 补充 t 到现有 import
+  const languagesImportRegex =
+    /(import\s*\{)([^}]*)(\}\s*from\s*["']@\/languages["'];?)/;
+  const existingMatch = source.match(languagesImportRegex);
+  if (existingMatch) {
+    const importedNames = existingMatch[2].trim();
+    // 如果 t 不在已有 import 中，添加它
+    if (!/\bt\b/.test(importedNames)) {
+      const newImport = `${existingMatch[1]} t, ${existingMatch[2]}${existingMatch[3]}`;
+      return source.replace(existingMatch[0], newImport);
+    }
+    return source;
+  }
+
+  // 全新插入 import { t } from "@/languages"
   const importStatement = 'import { t } from "@/languages";\n';
   const importMatches = [...source.matchAll(/^import .+;$/gm)];
   if (importMatches.length === 0) return `${importStatement}${source}`;
@@ -748,11 +1058,15 @@ function injectTranslateImport(source) {
 
 /**
  * 判断源码是否需要注入 t 的 import
+ * 幂等性：已有 t 的 import 时不重复注入
  * @param {string} source - 源码
  * @returns {boolean} 是否需要注入
  */
 function needsTranslateImport(source) {
-  return /\bt\(/.test(source) && !/from ["']@\/languages["']/.test(source);
+  // 检查是否已有 import { t } from "@/languages"
+  const tImportRegex = /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?/;
+  if (tImportRegex.test(source)) return false;
+  return /\bt\(/.test(source);
 }
 
 /**
@@ -772,6 +1086,26 @@ function shouldSkipFile(relativePath, config) {
  */
 function containsChinese(text) {
   return /[\u3400-\u9fff]/.test(text);
+}
+
+/**
+ * 修复双重包裹的 t(t('...')) → t('...')，防止 LLM 手动修改或多次 apply 导致的重复包裹
+ * 支持多重嵌套（t(t(t('...')))）和混合形式（t(this.t('...')) / this.t(t('...'))）
+ * @param {string} code - 源码
+ * @returns {string} 修复后的源码
+ */
+function unwrapNestedTranslateCalls(code) {
+  let prev;
+  do {
+    prev = code;
+    // 匹配 t(t('...')) / this.t(this.t('...')) / 混合形式（t(this.t('...')) 等）
+    // 支持带参数的 t() 调用：t(t('...', arg1), arg2) → t('...', arg1, arg2)（保守策略：仅展开无额外外层参数的简单嵌套）
+    code = code.replace(
+      /\b(t|this\.t)\(\s*(t|this\.t)\(\s*(['"])((?:[^'"\\]|\\.)*?)\3\s*\)\s*\)/g,
+      "$1($3$4$3)",
+    );
+  } while (code !== prev);
+  return code;
 }
 
 /**
@@ -832,6 +1166,74 @@ function buildChangePreview(beforeCode, afterCode) {
   return null;
 }
 
+/**
+ * 清理已国际化代码中的常见问题，用于重复 run 时的自动修复
+ * - 展开嵌套的 t(t('...')) 为单层 t('...')
+ * - 移除重复的 import { t } from "@/languages" 语句
+ * - 修复多余的空格和格式问题（通过 eslint --fix）
+ * @param {string} projectRoot - 目标项目根路径
+ * @param {object} config - i18n 配置
+ * @returns {object} 清理报告
+ */
+function cleanupI18n(projectRoot, config) {
+  const files = collectTargetFiles(projectRoot, config);
+  const cleanedFiles = [];
+
+  files.forEach((filePath) => {
+    const relativePath = toRelative(projectRoot, filePath);
+    if (shouldSkipFile(relativePath, config)) return;
+
+    const original = fs.readFileSync(filePath, "utf8");
+    let code = original;
+    let fixCount = 0;
+
+    // 1. 展开嵌套 t(t('...'))
+    const beforeUnwrap = code;
+    code = unwrapNestedTranslateCalls(code);
+    if (code !== beforeUnwrap) fixCount += 1;
+
+    // 2. 移除重复的 import { t } from "@/languages" 语句
+    const importRegex =
+      /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/g;
+    const importMatches = code.match(importRegex);
+    if (importMatches && importMatches.length > 1) {
+      // 保留第一个，移除其余
+      let firstKept = false;
+      code = code.replace(importRegex, (match) => {
+        if (!firstKept) {
+          firstKept = true;
+          return match;
+        }
+        return "";
+      });
+      fixCount += importMatches.length - 1;
+    }
+
+    if (fixCount > 0) {
+      fs.writeFileSync(filePath, code, "utf8");
+      cleanedFiles.push({ file: relativePath, fixCount });
+    }
+  });
+
+  // 3. eslint --fix 修复格式
+  if (cleanedFiles.length > 0) {
+    runEslintFix(
+      projectRoot,
+      cleanedFiles.map((f) => f.file),
+    );
+  }
+
+  return {
+    ok: true,
+    summary: {
+      cleanedFileCount: cleanedFiles.length,
+      totalFixes: cleanedFiles.reduce((sum, f) => sum + f.fixCount, 0),
+    },
+    cleanedFiles,
+  };
+}
+
 module.exports = {
   applyI18n,
+  cleanupI18n,
 };

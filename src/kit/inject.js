@@ -4,7 +4,6 @@ const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 const generate = require("@babel/generator").default;
 const t = require("@babel/types");
-const { runShellCommand } = require("./shell");
 
 const JS_PARSE_PLUGINS = [
   "jsx",
@@ -35,7 +34,8 @@ const REQUIRED_DEPS = {
     "postcss-scss": "^4.0.9",
   },
   scripts: {
-    "i18n:extract": "voerkai18n extract -D && prettier --write src/languages/*.*",
+    "i18n:extract":
+      "voerkai18n extract -D && prettier --write src/languages/*.*",
     "i18n:compile": "voerkai18n compile && prettier --write src/languages/*.*",
   },
 };
@@ -57,6 +57,19 @@ function inject(projectRoot, profile, config, options = {}) {
     interceptors: injectAcceptLanguage(projectRoot, options),
   };
 
+  // 对被修改的文件统一执行 eslint --fix，修复注入引入的格式问题
+  const { runEslintFix } = require("./eslint");
+  const modifiedFiles = [];
+  if (results.mainJs.updated) modifiedFiles.push("src/main.js");
+  if (results.appVue.updated) modifiedFiles.push("src/App.vue");
+  if (results.vueConfig.updated) modifiedFiles.push("vue.config.js");
+  if (results.interceptors.updated && results.interceptors.file) {
+    modifiedFiles.push(results.interceptors.file);
+  }
+  if (modifiedFiles.length > 0) {
+    runEslintFix(projectRoot, modifiedFiles);
+  }
+
   return {
     ok: true,
     summary: {
@@ -75,11 +88,15 @@ function inject(projectRoot, profile, config, options = {}) {
  * @returns {object} { ok, version, message }
  */
 function checkGlobalCliVersion() {
-  const result = require("child_process").spawnSync("voerkai18n", ["--version"], {
-    encoding: "utf8",
-    shell: true,
-    timeout: 10000,
-  });
+  const result = require("child_process").spawnSync(
+    "voerkai18n",
+    ["--version"],
+    {
+      encoding: "utf8",
+      shell: true,
+      timeout: 10000,
+    },
+  );
 
   const output = result.stdout || "";
   // voerkai18n --version 输出含 ANSI 颜色码，需先剥离再匹配版本号
@@ -90,7 +107,8 @@ function checkGlobalCliVersion() {
     return {
       ok: false,
       version: null,
-      message: "未检测到全局 voerkai18n，请执行: pnpm add -g @voerkai18n/cli@2.1.13",
+      message:
+        "未检测到全局 voerkai18n，请执行: pnpm add -g @voerkai18n/cli@2.1.13",
     };
   }
 
@@ -140,9 +158,7 @@ function injectPackageJson(projectRoot, options = {}) {
   function existsInOtherSection(name, currentSection) {
     const otherSection =
       currentSection === "dependencies" ? "devDependencies" : "dependencies";
-    return Boolean(
-      pkg[otherSection] && pkg[otherSection][name]
-    );
+    return Boolean(pkg[otherSection] && pkg[otherSection][name]);
   }
 
   ["dependencies", "devDependencies", "scripts"].forEach((section) => {
@@ -152,7 +168,10 @@ function injectPackageJson(projectRoot, options = {}) {
       if (section !== "scripts" && existsInOtherSection(name, section)) {
         return;
       }
-      if (!pkg[section][name] || (options.force && pkg[section][name] !== value)) {
+      if (
+        !pkg[section][name] ||
+        (options.force && pkg[section][name] !== value)
+      ) {
         pkg[section][name] = value;
         added.push(`${section}.${name}`);
       }
@@ -181,7 +200,7 @@ function injectMainJs(projectRoot, options = {}) {
 
   let source = fs.readFileSync(mainPath, "utf8");
 
-  if (source.includes('i18nPlugin') && !options.force) {
+  if (source.includes("i18nPlugin") && !options.force) {
     return { updated: false, message: "main.js 已包含 i18n 注入" };
   }
 
@@ -202,13 +221,9 @@ function injectMainJs(projectRoot, options = {}) {
     'require("@/styles/i18n-style.scss");',
   ];
 
-  let lastImportIndex = -1;
   let vueUseNode = null;
 
   traverse(ast, {
-    ImportDeclaration(pathRef) {
-      lastImportIndex = Math.max(lastImportIndex, pathRef.node.end);
-    },
     ExpressionStatement(pathRef) {
       const expr = pathRef.node.expression;
       if (
@@ -222,40 +237,29 @@ function injectMainJs(projectRoot, options = {}) {
     },
   });
 
-  const importNodes = importsToAdd.map((stmt) => {
-    return parser.parse(stmt, { sourceType: "module" }).program.body[0];
-  });
-
   if (vueUseNode) {
     const pluginCall = t.expressionStatement(
       t.callExpression(
         t.memberExpression(t.identifier("Vue"), t.identifier("use")),
-        [t.identifier("i18nPlugin"), t.objectExpression([t.objectProperty(t.identifier("i18nScope"), t.identifier("i18nScope"))])]
-      )
+        [
+          t.identifier("i18nPlugin"),
+          t.objectExpression([
+            t.objectProperty(
+              t.identifier("i18nScope"),
+              t.identifier("i18nScope"),
+            ),
+          ]),
+        ],
+      ),
     );
     const mixinCall = t.expressionStatement(
       t.callExpression(
         t.memberExpression(t.identifier("Vue"), t.identifier("mixin")),
-        [t.identifier("i18nWidthMixin")]
-      )
+        [t.identifier("i18nWidthMixin")],
+      ),
     );
     vueUseNode.insertAfter(mixinCall);
     vueUseNode.insertAfter(pluginCall);
-  }
-
-  if (lastImportIndex >= 0) {
-    importNodes.forEach((node, i) => {
-      const inserted = t.cloneNode(node);
-      if (i === 0) {
-        ast.program.body.splice(findInsertPosition(ast.program.body, lastImportIndex), 0, inserted);
-      } else {
-        ast.program.body.splice(findInsertPosition(ast.program.body, lastImportIndex) + i, 0, t.cloneNode(node));
-      }
-    });
-  } else {
-    importNodes.reverse().forEach((node) => {
-      ast.program.body.unshift(t.cloneNode(node));
-    });
   }
 
   let output = generate(ast, {
@@ -264,24 +268,66 @@ function injectMainJs(projectRoot, options = {}) {
     jsescOption: { minimal: true },
   }).code;
 
+  // 修复 AST 生成时可能将多条语句挤在同一行的问题
+  output = fixInjectedStatementNewlines(output);
+
+  // 使用字符串操作插入 import，确保每个语句独占一行（AST splice 不会添加换行）
+  output = insertImportsAsString(output, importsToAdd);
+
+  // 写入后执行 eslint --fix 修复格式
+  const { runEslintFix } = require("./eslint");
+  runEslintFix(projectRoot, ["src/main.js"]);
+
   source = replaceOldVueI18n(source, output);
   fs.writeFileSync(mainPath, output, "utf8");
   return { updated: true };
 }
 
 /**
- * 查找插入 import 的位置索引
- * @param {array} body - AST program body
- * @param {number} endPos - 最后一个 import 的 end 位置
- * @returns {number} 插入位置索引
+ * 修复 AST 生成时多条语句挤在同一行的问题
+ * 将形如 Vue.use(A);Vue.use(B);Vue.mixin(C); 的行拆分为多行
+ * @param {string} code - AST 生成的代码
+ * @returns {string} 修复后的代码
  */
-function findInsertPosition(body, endPos) {
-  for (let i = 0; i < body.length; i++) {
-    if (body[i].start >= endPos) {
-      return i;
+function fixInjectedStatementNewlines(code) {
+  return code.replace(
+    /((?:Vue\.use|Vue\.mixin)\([^;]*\);)(?=(?:Vue\.use|Vue\.mixin)\()/g,
+    "$1\n",
+  );
+}
+
+/**
+ * 使用字符串操作在最后一个 import/require 之后插入新的 import 语句
+ * 确保每个语句独占一行，遵循 eslint 规则
+ * @param {string} code - AST 生成的代码
+ * @param {string[]} importsToAdd - 要插入的 import 语句数组
+ * @returns {string} 插入后的代码
+ */
+function insertImportsAsString(code, importsToAdd) {
+  const lines = code.split("\n");
+  let lastImportLineIndex = -1;
+
+  // 找到最后一个 import 或 require 语句所在行
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (
+      trimmed.startsWith("import ") ||
+      trimmed.startsWith("require(") ||
+      trimmed.match(/^const\s+\w+\s*=\s*require\(/)
+    ) {
+      lastImportLineIndex = i;
     }
   }
-  return body.length;
+
+  const importBlock = importsToAdd.join("\n") + "\n";
+
+  if (lastImportLineIndex >= 0) {
+    lines.splice(lastImportLineIndex + 1, 0, importBlock);
+    return lines.join("\n");
+  }
+
+  // 没有 import 时，插入到文件开头
+  return importBlock + code;
 }
 
 /**
@@ -300,7 +346,10 @@ function replaceOldVueI18n(original, output) {
 
   oldPatterns.forEach((pattern) => {
     if (pattern.test(result)) {
-      result = result.replace(pattern, 'import { i18n } from "@/utils/elementui-utils";');
+      result = result.replace(
+        pattern,
+        'import { i18n } from "@/utils/elementui-utils";',
+      );
     }
   });
 
@@ -322,7 +371,10 @@ function injectVueConfig(projectRoot, options = {}) {
   let content = fs.readFileSync(configPath, "utf8");
 
   if (content.includes("voerkai18n-loader") && !options.force) {
-    return { updated: false, message: "vue.config.js 已包含 voerkai18n-loader" };
+    return {
+      updated: false,
+      message: "vue.config.js 已包含 voerkai18n-loader",
+    };
   }
 
   const loaderRule = `
@@ -346,12 +398,14 @@ function injectVueConfig(projectRoot, options = {}) {
   } else if (content.includes("configureWebpack")) {
     content = content.replace(
       /(configureWebpack:\s*\{)/,
-      "$1\n    module: {\n      rules: [" + loaderRule + "\n      ],\n    },"
+      "$1\n    module: {\n      rules: [" + loaderRule + "\n      ],\n    },",
     );
   } else {
     content = content.replace(
       /(\};)/,
-      "  configureWebpack: {\n    module: {\n      rules: [" + loaderRule + "\n      ],\n    },\n  },\n$1"
+      "  configureWebpack: {\n    module: {\n      rules: [" +
+        loaderRule +
+        "\n      ],\n    },\n  },\n$1",
     );
   }
 
@@ -377,17 +431,18 @@ function injectAppVue(projectRoot, options = {}) {
     return { updated: false, message: "App.vue 已包含 i18nMixin" };
   }
 
-  const mixinImport = 'import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";';
+  const mixinImport =
+    'import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";';
 
-  content = content.replace(
-    /(<script[^>]*>)/,
-    "$1\n" + mixinImport
-  );
+  content = content.replace(/(<script[^>]*>)/, "$1\n" + mixinImport);
 
   if (content.includes("mixins:")) {
     content = content.replace(/(mixins:\s*\[)/, "$1i18nMixin(), ");
   } else {
-    content = content.replace(/(export\s+default\s*\{)/, "$1\n  mixins: [i18nMixin()],");
+    content = content.replace(
+      /(export\s+default\s*\{)/,
+      "$1\n  mixins: [i18nMixin()],",
+    );
   }
 
   if (!content.includes("document.title")) {
@@ -419,7 +474,6 @@ function injectAcceptLanguage(projectRoot, options = {}) {
   }
 
   const files = fs.readdirSync(utilsDir).filter((f) => f.endsWith(".js"));
-  let injected = false;
 
   for (const file of files) {
     const filePath = path.join(utilsDir, file);
@@ -447,7 +501,6 @@ function injectAcceptLanguage(projectRoot, options = {}) {
         headerInjection +
         content.slice(insertPos);
       fs.writeFileSync(filePath, newContent, "utf8");
-      injected = true;
       return { updated: true, file: path.join("src/utils", file) };
     }
   }

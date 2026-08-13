@@ -7,7 +7,10 @@ const {
 } = require("./config");
 const { getPresetById, listPresets } = require("./presets");
 const { applyI18n } = require("./apply");
+const { cleanupI18n } = require("./apply");
 const { inspectProjectSetup } = require("./doctor");
+const { inject, checkGlobalCliVersion } = require("./inject");
+const { scaffold } = require("./scaffold");
 const { scanHardcodedChinese } = require("./scan");
 const { translateTranslations } = require("./translate");
 const { validateTranslations, inspectGeneratedFiles } = require("./validate");
@@ -235,6 +238,13 @@ async function runCommand(projectRoot, config, flags) {
   }
 
   if (!flags.noApply) {
+    logStep("步骤 1.5/6 清理遗留问题（嵌套 t()、重复 import）");
+    const cleanupReport = cleanupI18n(projectRoot, config);
+    if (cleanupReport.summary.cleanedFileCount > 0) {
+      console.log(
+        `[i18n-kit] cleanup: 修复 ${cleanupReport.summary.cleanedFileCount} 个文件, ${cleanupReport.summary.totalFixes} 处问题`,
+      );
+    }
     logStep("步骤 2/6 自动改写可安全提取的文案");
     result.apply = applyI18n(projectRoot, config);
     printApplyReport(projectRoot, result.apply);
