@@ -641,10 +641,10 @@ function printJson(value) {
 
 function printHelp() {
   console.log(`
-keendata-i18n-kit
+@kd/i18n
 
 用法:
-  npx keendata-i18n-kit <command> --project /absolute/path/to/repo [flags]
+  npx @kd/i18n <command> --project /absolute/path/to/repo [flags]
 
 命令:
   init       输出配置模板，或通过 --write-config 写入目标项目
@@ -681,12 +681,12 @@ keendata-i18n-kit
   --fail-on-scan  run 模式发现疑似未国际化文案时直接失败
 
 示例:
-  npx keendata-i18n-kit profile --project /path/to/repo
-  npx keendata-i18n-kit doctor --project /path/to/repo
-  npx keendata-i18n-kit rules --project /path/to/repo --json
-  npx keendata-i18n-kit apply --project /path/to/repo --dry-run
-  BAIDU_APPID=xxx BAIDU_APPKEY=xxx npx keendata-i18n-kit translate --project /path/to/repo --provider baidu
-  npx keendata-i18n-kit run --project /path/to/repo
+  npx @kd/i18n profile --project /path/to/repo
+  npx @kd/i18n doctor --project /path/to/repo
+  npx @kd/i18n rules --project /path/to/repo --json
+  npx @kd/i18n apply --project /path/to/repo --dry-run
+  BAIDU_APPID=xxx BAIDU_APPKEY=xxx npx @kd/i18n translate --project /path/to/repo --provider baidu
+  npx @kd/i18n run --project /path/to/repo
 `);
 }
 

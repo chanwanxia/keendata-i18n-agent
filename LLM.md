@@ -1,4 +1,4 @@
-# 将 keendata-i18n-agent 改造为真正的 LLM 驱动 Agent
+# 将 @kd/i18n 改造为真正的 LLM 驱动 Agent
 
 ## Summary
 
@@ -36,7 +36,7 @@
 
 API Key 支持三种方式提供，按优先级依次尝试：
 
-1. **交互式输入（首次使用）** — 检测到未配置时提示输入，保存到 `~/.keendata-i18n-agent/credentials.json`（权限 0600），后续自动读取。
+1. **交互式输入（首次使用）** — 检测到未配置时提示输入，保存到 `~/.kd-i18n/credentials.json`（权限 0600），后续自动读取。
 2. **环境变量（CI / 脚本）** — `LLM_API_KEY=sk-xxx`，优先级高于本地存储。
 3. **`--reset-key`** — 清除已保存的凭证，下次运行重新提示输入。
 
@@ -158,7 +158,7 @@ return { ok: false, message: "超过最大步数", stepCount: maxSteps, timeline
 
 凭证管理模块：
 
-- `loadCredentials()` — 读取 `~/.keendata-i18n-agent/credentials.json`
+- `loadCredentials()` — 读取 `~/.kd-i18n/credentials.json`
 - `saveCredentials(credentials)` — 保存凭证，文件权限 0600
 - `clearCredentials()` — 删除凭证文件
 - `promptForCredentials(defaultBaseUrl, defaultModel)` — 交互式提示输入 API Key / 端点 / 模型

@@ -8,7 +8,7 @@ const readline = require("readline");
  * @returns {string} 凭证目录路径
  */
 function getCredentialsDir() {
-  return path.join(os.homedir(), ".keendata-i18n-agent");
+  return path.join(os.homedir(), ".kd-i18n");
 }
 
 /**
@@ -72,14 +72,14 @@ function promptForCredentials(defaultBaseUrl, defaultModel) {
       output: process.stdout,
     });
 
-    console.log("\n[keendata-i18n-agent] 首次使用，需要配置 LLM API Key。");
-    console.log(`[keendata-i18n-agent] API 端点: ${defaultBaseUrl}`);
-    console.log(`[keendata-i18n-agent] 模型: ${defaultModel}`);
+    console.log("\n[kd-i18n] 首次使用，需要配置 LLM API Key。");
+    console.log(`[kd-i18n] API 端点: ${defaultBaseUrl}`);
+    console.log(`[kd-i18n] 模型: ${defaultModel}`);
     console.log(
-      "[keendata-i18n-agent] 输入后将保存到 ~/.keendata-i18n-agent/credentials.json，下次自动读取。",
+      "[kd-i18n] 输入后将保存到 ~/.kd-i18n/credentials.json，下次自动读取。",
     );
     console.log(
-      "[keendata-i18n-agent] 按 Ctrl+C 取消，或使用 --decision-mode rule 走规则模式。\n",
+      "[kd-i18n] 按 Ctrl+C 取消，或使用 --decision-mode rule 走规则模式。\n",
     );
 
     rl.question("请输入 API Key: ", (apiKey) => {
@@ -153,7 +153,7 @@ async function resolveCredentials(agentConfig) {
 
   saveCredentials(input);
   console.log(
-    "[keendata-i18n-agent] 凭证已保存，下次运行将自动读取。\n",
+    "[kd-i18n] 凭证已保存，下次运行将自动读取。\n",
   );
   return input;
 }

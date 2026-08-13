@@ -176,11 +176,11 @@ function printResult(result) {
  */
 function printHelp() {
   console.log(`
-keendata-i18n-agent
+@kd/i18n
 
 用法:
-  npx keendata-i18n-agent run [flags]
-  npx keendata-i18n-agent audit [flags]
+  npx @kd/i18n run [flags]
+  npx @kd/i18n audit [flags]
 
 命令:
   run        执行 i18n agent 全流程（scaffold → inject → scan → apply → extract → translate → compile）
@@ -213,11 +213,11 @@ keendata-i18n-agent
   --no-auto-inject                      禁止自动注入 main.js / vue.config.js / App.vue
 
 示例:
-  npx keendata-i18n-agent run
-  npx keendata-i18n-agent run --project /path/to/repo
-  LLM_API_KEY=xxx npx keendata-i18n-agent run --project /path/to/repo
-  npx keendata-i18n-agent run --decision-mode rule --project /path/to/repo
-  npx keendata-i18n-agent audit --project /path/to/repo --json
+  npx @kd/i18n run
+  npx @kd/i18n run --project /path/to/repo
+  LLM_API_KEY=xxx npx @kd/i18n run --project /path/to/repo
+  npx @kd/i18n run --decision-mode rule --project /path/to/repo
+  npx @kd/i18n audit --project /path/to/repo --json
 `);
 }
 

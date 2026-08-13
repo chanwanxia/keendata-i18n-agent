@@ -68,7 +68,7 @@ test("clearCredentials 文件不存在时不报错", () => {
 });
 
 test("loadCredentials 损坏文件返回 null", () => {
-  const credDir = path.join(TMP_HOME, ".keendata-i18n-agent");
+  const credDir = path.join(TMP_HOME, ".kd-i18n");
   fs.mkdirSync(credDir, { recursive: true });
   fs.writeFileSync(
     path.join(credDir, "credentials.json"),

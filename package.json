@@ -1,11 +1,22 @@
 {
-  "name": "keendata-i18n-agent",
+  "name": "@kd/i18n",
   "version": "0.2.0",
   "description": "One-command i18n automation for KeenData Vue2 projects",
+  "keywords": [
+    "i18n",
+    "vue2",
+    "voerkai18n",
+    "automation",
+    "llm"
+  ],
   "main": "src/index.js",
+  "files": [
+    "bin",
+    "src"
+  ],
   "bin": {
-    "keendata-i18n-agent": "bin/keendata-i18n-agent.js",
-    "keendata-i18n-kit": "bin/keendata-i18n-agent.js"
+    "i18n": "bin/kd-i18n.js",
+    "kd-i18n": "bin/kd-i18n.js"
   },
   "dependencies": {
     "@babel/generator": "^7.28.0",
@@ -17,13 +28,24 @@
     "@voerkai18n/vue2": "^2.1.13"
   },
   "scripts": {
-    "dev:help": "node bin/keendata-i18n-agent.js help",
+    "dev:help": "node bin/kd-i18n.js help",
     "test": "node --test test/",
+    "prepublishOnly": "npm test",
     "i18n:extract": "voerkai18n extract -D && prettier --write src/languages/*.*",
     "i18n:compile": "voerkai18n compile && prettier --write src/languages/*.*"
   },
   "engines": {
     "node": ">=18"
+  },
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chanwanxia/keendata-i18n-agent"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
     "@voerkai18n/cli": "^2.1.13",

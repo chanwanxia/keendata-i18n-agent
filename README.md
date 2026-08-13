@@ -1,4 +1,4 @@
-# keendata-i18n-agent
+# @kd/i18n
 
 One-command i18n automation for KeenData Vue2 projects. Scaffolds infrastructure, injects code, scans hardcoded Chinese, applies `t()` wrappers, translates via LLM, and compiles language packs — all driven by a tool-calling agent that can read/write source files, recover from errors, and retry until the full i18n pipeline passes.
 
@@ -29,10 +29,10 @@ cd /path/to/your-project
 export LLM_API_KEY=sk-xxx
 
 # 执行全流程（LLM 驱动，默认模式）
-npx keendata-i18n-agent run
+npx @kd/i18n run
 
 # 或指定项目路径
-npx keendata-i18n-agent run --project /path/to/your-project
+npx @kd/i18n run --project /path/to/your-project
 ```
 
 ### LLM 配置
@@ -43,13 +43,13 @@ npx keendata-i18n-agent run --project /path/to/your-project
 
 ```bash
 export LLM_API_KEY=sk-xxx
-npx keendata-i18n-agent run --project /path/to/your-project
+npx @kd/i18n run --project /path/to/your-project
 ```
 
-2. **本地存储（推荐，首次使用）** — 首次运行时交互式输入，自动保存到 `~/.keendata-i18n-agent/credentials.json`（权限 0600），后续运行自动读取，无需重复输入：
+2. **本地存储（推荐，首次使用）** — 首次运行时交互式输入，自动保存到 `~/.kd-i18n/credentials.json`（权限 0600），后续运行自动读取，无需重复输入：
 
 ```bash
-npx keendata-i18n-agent run --project /path/to/your-project
+npx @kd/i18n run --project /path/to/your-project
 # 首次运行会提示：
 # 请输入 API Key: sk-xxx
 # API 端点（回车使用默认 ...）:
@@ -60,7 +60,7 @@ npx keendata-i18n-agent run --project /path/to/your-project
 3. **重置已保存的凭证** — 如果需要更换 API Key：
 
 ```bash
-npx keendata-i18n-agent run --reset-key --project /path/to/your-project
+npx @kd/i18n run --reset-key --project /path/to/your-project
 # → 已清除保存的 API Key，下次运行将重新提示输入
 ```
 
@@ -77,20 +77,20 @@ npx keendata-i18n-agent run --reset-key --project /path/to/your-project
 ```bash
 # CI / 脚本场景下通过环境变量提供
 export LLM_API_KEY=sk-xxx
-npx keendata-i18n-agent run --project /path/to/your-project
+npx @kd/i18n run --project /path/to/your-project
 ```
 
 ### 审计项目国际化合规性
 
 ```bash
-npx keendata-i18n-agent audit --project /path/to/your-project
-npx keendata-i18n-agent audit --project /path/to/your-project --json
+npx @kd/i18n audit --project /path/to/your-project
+npx @kd/i18n audit --project /path/to/your-project --json
 ```
 
 ### 回退到规则模式（不需要 LLM）
 
 ```bash
-npx keendata-i18n-agent run --decision-mode rule --project /path/to/your-project
+npx @kd/i18n run --decision-mode rule --project /path/to/your-project
 ```
 
 ## 分步操作
@@ -99,42 +99,42 @@ npx keendata-i18n-agent run --decision-mode rule --project /path/to/your-project
 
 ```bash
 # 探测项目画像
-npx keendata-i18n-agent profile --project /path/to/repo
+npx @kd/i18n profile --project /path/to/repo
 
 # 检查 i18n 基建
-npx keendata-i18n-agent doctor --project /path/to/repo
+npx @kd/i18n doctor --project /path/to/repo
 
 # 扫描疑似未国际化中文
-npx keendata-i18n-agent scan --project /path/to/repo
+npx @kd/i18n scan --project /path/to/repo
 
 # 预览自动改写结果（不写入文件）
-npx keendata-i18n-agent apply --project /path/to/repo --dry-run
+npx @kd/i18n apply --project /path/to/repo --dry-run
 
 # 执行自动改写
-npx keendata-i18n-agent apply --project /path/to/repo
+npx @kd/i18n apply --project /path/to/repo
 
 # 自动补齐缺失翻译
-npx keendata-i18n-agent translate --project /path/to/repo --provider llm
+npx @kd/i18n translate --project /path/to/repo --provider llm
 
 # 校验翻译完整性与正确性
-npx keendata-i18n-agent validate --project /path/to/repo
+npx @kd/i18n validate --project /path/to/repo
 
 # 写入基础设施文件
-npx keendata-i18n-agent scaffold --project /path/to/repo
+npx @kd/i18n scaffold --project /path/to/repo
 
 # 注入 i18n 代码
-npx keendata-i18n-agent inject --project /path/to/repo
+npx @kd/i18n inject --project /path/to/repo
 
 # 执行词条提取
-npx keendata-i18n-agent extract --project /path/to/repo
+npx @kd/i18n extract --project /path/to/repo
 
 # 执行语言包编译
-npx keendata-i18n-agent compile --project /path/to/repo
+npx @kd/i18n compile --project /path/to/repo
 ```
 
 ## Agent 工作流程
 
-`npx keendata-i18n-agent run`（默认 LLM 模式）启动一个 tool-calling agent，LLM 自主决策并调用以下工具完成全流程：
+`npx @kd/i18n run`（默认 LLM 模式）启动一个 tool-calling agent，LLM 自主决策并调用以下工具完成全流程：
 
 1. **scaffold** — 写入 i18n 基础设施文件（languages 目录、mixin、样式等）
 2. **inject** — 向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码
@@ -161,8 +161,8 @@ Agent 遇到工具返回错误时，会读取错误信息、分析问题、采�
 ### agent 命令
 
 ```bash
-npx keendata-i18n-agent run [flags]      # 全流程（默认 LLM 驱动）
-npx keendata-i18n-agent audit [flags]    # 审计
+npx @kd/i18n run [flags]      # 全流程（默认 LLM 驱动）
+npx @kd/i18n audit [flags]    # 审计
 ```
 
 ### 常用参数
@@ -191,7 +191,7 @@ npx keendata-i18n-agent audit [flags]    # 审计
 工具的可选配置覆盖文件。不存在时自动推导默认配置。通过 `init --write-config` 写入：
 
 ```bash
-npx keendata-i18n-agent init --project /path/to/repo --write-config
+npx @kd/i18n init --project /path/to/repo --write-config
 ```
 
 常用配置项：
@@ -256,9 +256,9 @@ agent 流程控制配置，控制 `run` 命令的行为：
 ## 架构
 
 ```
-keendata-i18n-agent/
+@kd/i18n/
 ├── bin/
-│   └── keendata-i18n-agent.js       # CLI 入口
+│   └── kd-i18n.js       # CLI 入口
 ├── src/
 │   ├── index.js                      # 模块导出
 │   ├── cli.js                        # agent CLI（run / audit）
@@ -386,7 +386,7 @@ pnpm test
 pnpm dev:help
 
 # 直接运行
-LLM_API_KEY=sk-xxx node bin/keendata-i18n-agent.js run --project /path/to/repo
+LLM_API_KEY=sk-xxx node bin/kd-i18n.js run --project /path/to/repo
 ```
 
 ## 常见问题

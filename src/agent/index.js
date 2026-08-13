@@ -70,7 +70,7 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
       message:
         "缺少 LLM API Key。可通过以下方式提供：\n" +
         "  1. 环境变量 LLM_API_KEY=sk-xxx\n" +
-        "  2. 运行时交互式输入（首次会提示，自动保存到 ~/.keendata-i18n-agent/credentials.json）\n" +
+        "  2. 运行时交互式输入（首次会提示，自动保存到 ~/.kd-i18n/credentials.json）\n" +
         "  3. 使用 --decision-mode rule 走规则模式（不需要 LLM）",
       projectRoot,
       stepCount: 0,

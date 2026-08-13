@@ -1,8 +1,8 @@
-# keendata-i18n-agent 全自动国际化 — 完整实现方案 v4
+# @kd/i18n 全自动国际化 — 完整实现方案 v4
 
 ## 概述
 
-将 `keendata-i18n-kit` 和 `keendata-i18n-agent` 合并为单一 npm 包 `keendata-i18n-agent`，以 gaea-fe-new 为唯一金标，实现 `npx keendata-i18n-agent` 一键完成同框架 KeenData Vue2 项目的全部国际化工作。
+将 `keendata-i18n-kit` 和 `@kd/i18n` 合并为单一 npm 包 `@kd/i18n`，以 gaea-fe-new 为唯一金标，实现 `npx @kd/i18n` 一键完成同框架 KeenData Vue2 项目的全部国际化工作。
 
 ### voerkai18n 命令职责边界
 
@@ -34,8 +34,8 @@ scaffold → inject → check_cli → doctor → scan → apply → extract → 
 
 ## 一、合并为单包
 
-- `keendata-i18n-kit/src/*` 全部移入 `keendata-i18n-agent/src/kit/`，agent 的 `require("keendata-i18n-kit")` 改为 `require("./kit")`
-- `package.json` 合并 dependencies（`@babel/parser`、`@babel/traverse`、`@babel/generator`、`@babel/types`），`bin` 指向 `bin/keendata-i18n-agent.js`，去掉 `private: true`
+- `keendata-i18n-kit/src/*` 全部移入 `@kd/i18n/src/kit/`，agent 的 `require("keendata-i18n-kit")` 改为 `require("./kit")`
+- `package.json` 合并 dependencies（`@babel/parser`、`@babel/traverse`、`@babel/generator`、`@babel/types`），`bin` 指向 `bin/@kd/i18n.js`，去掉 `private: true`
 - 删除 kit 的 `file:../keendata-i18n-kit` 依赖引用
 - `pnpm install` 统一在 agent 包内安装
 
@@ -409,19 +409,19 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 
 ```bash
 # 一键执行全流程
-npx keendata-i18n-agent run --project /path/to/repo
+npx @kd/i18n run --project /path/to/repo
 
 # 使用 LLM 翻译
-OPENAI_API_KEY=xxx npx keendata-i18n-agent run --project /path/to/repo
+OPENAI_API_KEY=xxx npx @kd/i18n run --project /path/to/repo
 
 # 在当前目录执行
-npx keendata-i18n-agent run
+npx @kd/i18n run
 
 # 审计项目国际化合规性
-npx keendata-i18n-agent audit --project /path/to/repo
+npx @kd/i18n audit --project /path/to/repo
 
 # JSON 输出（用于 CI）
-npx keendata-i18n-agent run --project /path/to/repo --json
+npx @kd/i18n run --project /path/to/repo --json
 ```
 
 ---
