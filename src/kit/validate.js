@@ -250,6 +250,47 @@ function isPlaceholderTranslation(value) {
   return PLACEHOLDER_TRANSLATION_REGEX.test(value.trim());
 }
 
+/**
+ * 修复 idMap.js 中未加引号的中文 key，确保 voerkai18n-loader 能正确 require/JSON.parse
+ * voerkai18n compile 生成的 idMap.js 可能出现 { 已授权: 1 } 而非 { "已授权": 1 }，
+ * 导致 require() 失败（ESM）且 JSON.parse 回退也失败，报错 "idMap.ts文件不存在"
+ * @param {string} projectRoot - 项目根路径
+ * @returns {object} { ok, fixed, file }
+ */
+function fixIdMapKeys(projectRoot) {
+  const idMapPath = path.join(projectRoot, "src/languages/idMap.js");
+  if (!fs.existsSync(idMapPath)) {
+    return { ok: false, fixed: false, message: "idMap.js 不存在" };
+  }
+
+  let content = fs.readFileSync(idMapPath, "utf8");
+
+  // 修复：1. 引号包裹未加引号的 key  2. 移除尾部分号  3. 移除尾部逗号
+  const original = content;
+
+  // 引号包裹未加引号的 key（中文、英文标识符等紧跟冒号的情况）
+  const unquotedKeyPattern = /(^|,)\s*([\u3400-\u9fff\w]+)\s*:/gm;
+  content = content.replace(unquotedKeyPattern, (match, prefix, key) => {
+    // 如果 key 已经被引号包裹则跳过
+    if (key.startsWith('"') || key.startsWith("'")) return match;
+    // 引号包裹 key，转义内部双引号
+    return `${prefix} "${key}":`;
+  });
+
+  // 移除尾部分号（}; → }）
+  content = content.replace(/}\s*;?\s*$/, "}");
+
+  // 移除对象末尾的逗号（,} → }）
+  content = content.replace(/,\s*}/g, "}");
+
+  if (content !== original) {
+    fs.writeFileSync(idMapPath, content, "utf8");
+    return { ok: true, fixed: true, file: "src/languages/idMap.js" };
+  }
+
+  return { ok: true, fixed: false, file: "src/languages/idMap.js" };
+}
+
 module.exports = {
   inspectGeneratedFiles,
   extractPlaceholders,
@@ -260,4 +301,5 @@ module.exports = {
   isPlaceholderTranslation,
   validateTranslations,
   validateTranslationObject,
+  fixIdMapKeys,
 };

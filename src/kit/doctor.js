@@ -43,16 +43,20 @@ function inspectProjectSetup(projectRoot, profile, config) {
   checks.push(checkFileExists(projectRoot, rtlRules.styleFile, "rtl-style", "RTL 样式文件"));
   checks.push(checkFileContains(projectRoot, widthRules.file, /getI18nWidth/, "width-adaptation", "宽度适配 helper"));
   checks.push(
-    checkFileContains(projectRoot, networkRules.file, /Accept-Language/, "accept-language", "请求头 Accept-Language 映射"),
+    checkAcceptLanguage(projectRoot, networkRules),
   );
-  checks.push(checkFileExists(projectRoot, bootstrapRules.componentLocaleFile, "component-locale", "组件库 locale 适配文件"));
-  checks.push(checkRouteTitle(projectRoot, routeTitleRules));
-  checks.push(checkDependencies(projectRoot));
-  checks.push(checkScripts(projectRoot));
-  checks.push(checkGlobalCli());
-  checks.push(checkPostcssConfig(projectRoot));
+checks.push(checkFileExists(projectRoot, bootstrapRules.componentLocaleFile, "component-locale", "组件库 locale 适配文件"));
+ checks.push(checkRouteTitle(projectRoot, routeTitleRules));
+ checks.push(checkDependencies(projectRoot));
+ checks.push(checkScripts(projectRoot));
+ checks.push(checkGlobalCli());
+ checks.push(checkPostcssConfig(projectRoot));
 
-  return buildDoctorReport(projectRoot, profile, checks);
+ checks.push(checkKdComponentsVersion(projectRoot));
+ checks.push(checkLayoutHeaderLanguageSwitcher(projectRoot));
+ checks.push(checkElementuiUtils(projectRoot, bootstrapRules));
+
+ return buildDoctorReport(projectRoot, profile, checks);
 }
 
 /**
@@ -65,7 +69,7 @@ function checkMainBootstrap(projectRoot, bootstrapRules) {
   const mainFile = bootstrapRules.mainFile;
   const filePath = path.join(projectRoot, mainFile || "");
   if (!mainFile || !fs.existsSync(filePath)) {
-    return createCheck("bootstrap-main", "warn", `缺少入口文件 ${mainFile || "src/main.js"}`, {
+    return createCheck("bootstrap-main", "fail", `缺少入口文件 ${mainFile || "src/main.js"}`, {
       suggestion: "补齐入口文件，并注入 i18n plugin、scope、width mixin 与样式导入",
     });
   }
@@ -86,7 +90,7 @@ function checkMainBootstrap(projectRoot, bootstrapRules) {
   }
 
   if (missing.length > 0) {
-    return createCheck("bootstrap-main", "warn", "入口文件缺少部分 i18n 基建", {
+    return createCheck("bootstrap-main", "fail", "入口文件缺少部分 i18n 基建", {
       missing,
       suggestion: "按 preset 规则补齐 Vue.use(i18nPlugin)、Vue.mixin(i18nWidthMixin) 和相关 import",
     });
@@ -103,14 +107,14 @@ function checkMainBootstrap(projectRoot, bootstrapRules) {
 function checkWebpackLoader(projectRoot) {
   const vueConfigFile = path.join(projectRoot, "vue.config.js");
   if (!fs.existsSync(vueConfigFile)) {
-    return createCheck("webpack-loader", "warn", "未找到 vue.config.js，无法检查 voerkai18n-loader", {
+    return createCheck("webpack-loader", "fail", "未找到 vue.config.js，无法检查 voerkai18n-loader", {
       suggestion: "如果是 Vue CLI 项目，请新增 vue.config.js 并配置 voerkai18n-loader",
     });
   }
 
   const content = fs.readFileSync(vueConfigFile, "utf8");
   if (!content.includes("voerkai18n-loader")) {
-    return createCheck("webpack-loader", "warn", "vue.config.js 未配置 voerkai18n-loader", {
+    return createCheck("webpack-loader", "fail", "vue.config.js 未配置 voerkai18n-loader", {
       suggestion: "在 configureWebpack.module.rules 中加入 voerkai18n-loader，并对 src 下 js/vue 生效",
     });
   }
@@ -136,7 +140,7 @@ function checkStyleImports(projectRoot, bootstrapRules) {
   const content = fs.readFileSync(filePath, "utf8");
   const missingImports = (bootstrapRules.styleImports || []).filter((item) => !content.includes(item));
   if (missingImports.length > 0) {
-    return createCheck("style-imports", "warn", "入口文件缺少国际化样式引入", {
+    return createCheck("style-imports", "fail", "入口文件缺少国际化样式引入", {
       missingImports,
       suggestion: "在入口文件中补充 require/import '@/styles/i18n-style.scss'",
     });
@@ -153,14 +157,14 @@ function checkStyleImports(projectRoot, bootstrapRules) {
  */
 function checkRouteTitle(projectRoot, routeTitleRules) {
   if (!routeTitleRules.file) {
-    return createCheck("route-title", "warn", "未配置路由标题规则", {
+    return createCheck("route-title", "fail", "未配置路由标题规则", {
       suggestion: "在 preset 中声明 App.vue 或等价入口中的标题处理规则",
     });
   }
 
   const filePath = path.join(projectRoot, routeTitleRules.file);
   if (!fs.existsSync(filePath)) {
-    return createCheck("route-title", "warn", `未找到路由标题文件 ${routeTitleRules.file}`, {
+    return createCheck("route-title", "fail", `未找到路由标题文件 ${routeTitleRules.file}`, {
       suggestion: "确认 App.vue 或路由壳组件路径，并在其中使用 t(route.meta.title)",
     });
   }
@@ -175,7 +179,7 @@ function checkRouteTitle(projectRoot, routeTitleRules) {
     return createCheck("route-title", "pass", "检测到路由标题国际化处理");
   }
 
-  return createCheck("route-title", "warn", "未检测到明显的路由标题国际化处理", {
+  return createCheck("route-title", "fail", "未检测到明显的路由标题国际化处理", {
     suggestion: "在路由切换处用 t(route.meta.title) 组装 document.title",
   });
 }
@@ -208,7 +212,7 @@ function checkFileExists(projectRoot, relativePath, id, label, extra = {}) {
  */
 function checkFileContains(projectRoot, relativePath, pattern, id, label) {
   if (!relativePath) {
-    return createCheck(id, "warn", `未配置${label}文件`);
+    return createCheck(id, "fail", `未配置${label}文件`);
   }
 
   const filePath = path.join(projectRoot, relativePath);
@@ -218,7 +222,7 @@ function checkFileContains(projectRoot, relativePath, pattern, id, label) {
 
   const content = fs.readFileSync(filePath, "utf8");
   if (!pattern.test(content)) {
-    return createCheck(id, "warn", `${label}存在，但未检测到关键标记`);
+    return createCheck(id, "fail", `${label}存在，但未检测到关键标记`);
   }
 
   return createCheck(id, "pass", `${label}检查通过`);
@@ -236,15 +240,21 @@ function checkDependencies(projectRoot) {
     return createCheck("dependencies", "fail", "package.json 不存在");
   }
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-  const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-  const required = ["@voerkai18n/runtime", "@voerkai18n/vue2", "@voerkai18n/cli", "voerkai18n-loader", "postcss-rtlcss"];
-  const missing = required.filter((dep) => !allDeps[dep]);
-  if (missing.length > 0) {
-    return createCheck("dependencies", "warn", `缺少依赖: ${missing.join(", ")}`, {
-      suggestion: "执行 inject 或手动安装缺失的依赖",
-    });
-  }
-  return createCheck("dependencies", "pass", "i18n 依赖完整");
+ const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+ const required = ["@voerkai18n/runtime", "@voerkai18n/vue2", "@voerkai18n/cli", "voerkai18n-loader", "postcss-rtlcss"];
+ const missing = required.filter((dep) => !allDeps[dep]);
+ if (missing.length > 0) {
+   return createCheck("dependencies", "fail", `缺少依赖: ${missing.join(", ")}`, {
+     suggestion: "执行 inject 或手动安装缺失的依赖",
+   });
+ }
+ // @kd/components 版本检查
+ if (!allDeps["@kd/components"]) {
+   return createCheck("dependencies", "fail", "缺少 @kd/components 依赖", {
+     suggestion: "安装 @kd/components v5+: pnpm add @kd/components@^5",
+   });
+ }
+ return createCheck("dependencies", "pass", "i18n 依赖完整");
 }
 
 /**
@@ -263,7 +273,7 @@ function checkScripts(projectRoot) {
   if (!scripts["i18n:extract"]) missing.push("i18n:extract");
   if (!scripts["i18n:compile"]) missing.push("i18n:compile");
   if (missing.length > 0) {
-    return createCheck("scripts", "warn", `缺少脚本: ${missing.join(", ")}`);
+    return createCheck("scripts", "fail", `缺少脚本: ${missing.join(", ")}`);
   }
   return createCheck("scripts", "pass", "i18n 脚本完整");
 }
@@ -298,16 +308,49 @@ function checkGlobalCli() {
  * @param {string} projectRoot - 项目根路径
  * @returns {object} 检查结果
  */
+/**
+ * 检查 Accept-Language 请求头注入，先检查 preset 配置的文件，再搜索 src/utils/ 下所有 .js 文件
+ * @param {string} projectRoot - 项目根路径
+ * @param {object} networkRules - 网络规则
+ * @returns {object} 检查结果
+ */
+function checkAcceptLanguage(projectRoot, networkRules) {
+  // 先检查 preset 配置的文件
+  if (networkRules.file) {
+    const filePath = path.join(projectRoot, networkRules.file);
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, "utf8");
+      if (/Accept-Language/.test(content)) {
+        return createCheck("accept-language", "pass", "请求头 Accept-Language 映射检查通过");
+      }
+    }
+  }
+  // 搜索 src/utils/ 下所有 .js 文件
+  const utilsDir = path.join(projectRoot, "src/utils");
+  if (fs.existsSync(utilsDir)) {
+    const files = fs.readdirSync(utilsDir).filter((f) => f.endsWith(".js"));
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(utilsDir, file), "utf8");
+      if (/Accept-Language/.test(content)) {
+        return createCheck("accept-language", "pass", `请求头 Accept-Language 映射检查通过 (在 ${file} 中检测到)`);
+      }
+    }
+  }
+  return createCheck("accept-language", "fail", "未检测到 Accept-Language 请求头注入", {
+    suggestion: "执行 inject 或手动在请求拦截器中注入 Accept-Language header",
+  });
+}
+
 function checkPostcssConfig(projectRoot) {
   const configPath = path.join(projectRoot, "postcss.config.js");
   if (!fs.existsSync(configPath)) {
-    return createCheck("postcss-config", "warn", "缺少 postcss.config.js", {
+    return createCheck("postcss-config", "fail", "缺少 postcss.config.js", {
       suggestion: "执行 scaffold 或手动创建 postcss.config.js 并配置 postcss-rtlcss",
     });
   }
   const content = fs.readFileSync(configPath, "utf8");
   if (!content.includes("postcss-rtlcss")) {
-    return createCheck("postcss-config", "warn", "postcss.config.js 未配置 postcss-rtlcss");
+    return createCheck("postcss-config", "fail", "postcss.config.js 未配置 postcss-rtlcss");
   }
   return createCheck("postcss-config", "pass", "postcss-rtlcss 已配置");
 }
@@ -351,6 +394,116 @@ function createCheck(id, status, message, extra = {}) {
     message,
     ...extra,
   };
+}
+
+/**
+ * 检查 @kd/components 版本是否 >= 5.0.0（v5 起才有 dist/locale/lang/* 国际化文件）
+ * @param {string} projectRoot - 项目根路径
+ * @returns {object} 检查结果
+ */
+function checkKdComponentsVersion(projectRoot) {
+  const pkgPath = path.join(projectRoot, "package.json");
+  if (!fs.existsSync(pkgPath)) {
+    return createCheck("kd-components-version", "fail", "package.json 不存在");
+  }
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const version =
+    (pkg.dependencies && pkg.dependencies["@kd/components"]) ||
+    (pkg.devDependencies && pkg.devDependencies["@kd/components"]);
+  if (!version) {
+    return createCheck("kd-components-version", "fail", "未检测到 @kd/components", {
+      suggestion: "安装 @kd/components v5+: pnpm add @kd/components@^5",
+    });
+  }
+  const match = version.match(/(\d+)\./);
+  if (!match) {
+    return createCheck("kd-components-version", "fail", `@kd/components 版本格式无法解析: ${version}`);
+  }
+  const major = parseInt(match[1], 10);
+  if (major < 5) {
+    return createCheck("kd-components-version", "fail", `@kd/components 版本 ${version} 过低，国际化 locale 需要 v5+`, {
+      suggestion: "升级: pnpm add @kd/components@^5",
+    });
+  }
+  return createCheck("kd-components-version", "pass", `@kd/components ${version}`);
+}
+
+/**
+ * 检查 layout-header 组件是否注入了语言切换器（i18nMixin + kd-select）
+ * @param {string} projectRoot - 项目根路径
+ * @returns {object} 检查结果
+ */
+function checkLayoutHeaderLanguageSwitcher(projectRoot) {
+  const defaultPath = path.join(projectRoot, "src/layout/layout-header/index.vue");
+  let headerPath = defaultPath;
+
+  if (!fs.existsSync(headerPath)) {
+    // 搜索 src/layout/ 下含 right-box 的 .vue 文件
+    const layoutDir = path.join(projectRoot, "src/layout");
+    if (!fs.existsSync(layoutDir)) {
+      return createCheck("layout-header-language", "fail", "src/layout 目录不存在");
+    }
+    const found = findHeaderFile(layoutDir);
+    if (!found) {
+      return createCheck("layout-header-language", "fail", "未找到 layout-header 组件");
+    }
+    headerPath = found;
+  }
+
+  const content = fs.readFileSync(headerPath, "utf8");
+  const hasMixin = content.includes("i18nMixin");
+  const hasSwitcher = content.includes("activeLanguage") || content.includes("changeLanguage");
+
+  if (hasMixin && hasSwitcher) {
+    return createCheck("layout-header-language", "pass", "layout-header 已注入语言切换器");
+  }
+  return createCheck("layout-header-language", "fail", "layout-header 缺少语言切换器或 i18nMixin", {
+    suggestion: "执行 inject 或手动注入 i18nMixin 和 kd-select 语言切换器",
+  });
+}
+
+/**
+ * 递归搜索 layout 目录下包含 right-box class 的 .vue 文件
+ * @param {string} dir - 搜索目录
+ * @returns {string|null} 文件路径或 null
+ */
+function findHeaderFile(dir) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = findHeaderFile(fullPath);
+      if (found) return found;
+    } else if (entry.name.endsWith(".vue")) {
+      const content = fs.readFileSync(fullPath, "utf8");
+      if (content.includes("right-box")) {
+        return fullPath;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 检查 elementui-utils.js 是否存在且包含 @kd/components locale 引入
+ * @param {string} projectRoot - 项目根路径
+ * @param {object} bootstrapRules - 基建规则
+ * @returns {object} 检查结果
+ */
+function checkElementuiUtils(projectRoot, bootstrapRules) {
+  const filePath = path.join(projectRoot, bootstrapRules.componentLocaleFile || "src/utils/elementui-utils.js");
+  if (!fs.existsSync(filePath)) {
+    return createCheck("elementui-utils", "fail", "缺少 elementui-utils.js 组件 locale 适配文件", {
+      suggestion: "执行 scaffold 或手动创建 src/utils/elementui-utils.js",
+    });
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  if (!content.includes("@kd/components/dist/locale")) {
+    return createCheck("elementui-utils", "fail", "elementui-utils.js 未引入 @kd/components locale", {
+      suggestion: "在 elementui-utils.js 中引入 @kd/components 的 locale 语言包",
+    });
+  }
+  return createCheck("elementui-utils", "pass", "elementui-utils.js 检查通过");
 }
 
 module.exports = {

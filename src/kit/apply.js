@@ -161,22 +161,48 @@ function transformVueFile(source, preset, config) {
     }
   }
 
+ if (sfc.script && sfc.script.content) {
+   // 同样使用 start/end 位置提取真实 script 内容
+   const scriptContent =
+     sfc.script.start != null && sfc.script.end != null
+       ? source.slice(sfc.script.start, sfc.script.end)
+       : sfc.script.content;
+   const transformed = transformJsFile(scriptContent, {
+     vueComponent: true,
+     preset,
+     config,
+   });
+   if (transformed.changed) {
+     changed = true;
+     replacements += transformed.replacements;
+     code = code.replace(scriptContent, transformed.code);
+   }
+ }
+
+  // JS 级别方向性赋值转换（如 style.cssFloat = "left" -> this.isRtl ? "right" : "left"）
   if (sfc.script && sfc.script.content) {
-    // 同样使用 start/end 位置提取真实 script 内容
     const scriptContent =
       sfc.script.start != null && sfc.script.end != null
-        ? source.slice(sfc.script.start, sfc.script.end)
-        : sfc.script.content;
-    const transformed = transformJsFile(scriptContent, {
-      vueComponent: true,
-      preset,
-      config,
-    });
-    if (transformed.changed) {
-      changed = true;
-      replacements += transformed.replacements;
-      code = code.replace(scriptContent, transformed.code);
+        ? code.slice(
+            sfc.script.start,
+            sfc.script.end,
+          )
+        : null;
+    if (scriptContent) {
+      const rtlResult = transformRtlJsAssignments(scriptContent);
+      if (rtlResult.changed) {
+        changed = true;
+        replacements += rtlResult.replacements;
+        code = code.replace(scriptContent, rtlResult.code);
+      }
     }
+  }
+
+  // isRtl inject 自动注入：如果文件中使用了 isRtl 但缺少 inject 声明
+  const injectResult = ensureIsRtlInject(code);
+  if (injectResult.changed) {
+    changed = true;
+    code = injectResult.code;
   }
 
   return { changed, replacements, code };
@@ -216,9 +242,24 @@ function transformVueFileFallback(source, preset, config) {
       if (!transformed.changed) return block;
       changed = true;
       replacements += transformed.replacements;
-      return block.replace(scriptContent, transformed.code);
-    },
-  );
+     return block.replace(scriptContent, transformed.code);
+   },
+ );
+
+  // JS 级别方向性赋值转换
+  const rtlResult = transformRtlJsAssignments(code);
+  if (rtlResult.changed) {
+    changed = true;
+    replacements += rtlResult.replacements;
+    code = rtlResult.code;
+  }
+
+  // isRtl inject 自动注入
+  const injectResult = ensureIsRtlInject(code);
+  if (injectResult.changed) {
+    changed = true;
+    code = injectResult.code;
+  }
 
   return { changed, replacements, code };
 }
@@ -320,20 +361,277 @@ function transformTemplate(source, preset, config) {
    // 跳过跨越属性边界的匹配：rawText 中包含 " 说明匹配了属性值中的 > 比较运算符
    if (rawText.includes('"')) return match;
    // 幂等性检查：已包含 t() 调用的文本不再重复包裹
-   if (/\bt\s*\(/.test(rawText)) return match;
-    replacements += 1;
-      const trimmed = rawText.trim();
-      const leading = rawText.match(/^\s*/)[0];
-      const trailing = rawText.match(/\s*$/)[0];
-      return `>${leading}{{ ${buildTranslateCallSource("t", trimmed)} }}${trailing}<`;
-    },
-  );
+  if (/\bt\s*\(/.test(rawText)) return match;
+   replacements += 1;
+     const trimmed = rawText.trim();
+     const leading = rawText.match(/^\s*/)[0];
+     const trailing = rawText.match(/\s*$/)[0];
+     return `>${leading}{{ ${buildTranslateCallSource("t", trimmed)} }}${trailing}<`;
+   },
+ );
+
+  // .meta.title 表达式自动 t() 包裹
+  // 匹配 mustache 中的 <identifier>.meta.title 或 <identifier>.title（当 identifier 含 meta/Path 关键字时）
+  // 已在 t() 内的跳过
+  const metaTitleResult = wrapMetaTitleExpressions(code);
+  if (metaTitleResult.changed) {
+    replacements += metaTitleResult.replacements;
+    code = metaTitleResult.code;
+  }
+
+  // isRtl 内联样式自动转换
+  // 检测 :style 中的方向性属性（padding-left/right, margin-left/right 等），转换为 isRtl 条件表达式
+  const rtlStyleResult = transformRtlInlineStyles(code);
+  if (rtlStyleResult.changed) {
+    replacements += rtlStyleResult.replacements;
+    code = rtlStyleResult.code;
+  }
+
+  // el-form label-width 自动适配：将固定 px 值改为 auto，让 Element UI 根据内容自动计算宽度
+  // 保留 label-width="0" 和 label-width="0px"（特殊布局用途）
+  const labelWidthResult = transformLabelWidthToAuto(code);
+  if (labelWidthResult.changed) {
+    replacements += labelWidthResult.replacements;
+    code = labelWidthResult.code;
+  }
 
   const cleanedCode = unwrapNestedTranslateCalls(code);
   return {
     changed: replacements > 0 || cleanedCode !== code,
     replacements,
     code: cleanedCode,
+  };
+}
+
+/**
+ * 将 template 中的 .meta.title 表达式自动包裹为 t() 调用
+ * 匹配模式：{{ item.meta.title }} -> {{ t(item.meta.title) }}
+ * 匹配模式：{{ currentPathMeta.title }} -> {{ t(currentPathMeta.title) }}（identifier 含 meta/Path 关键字时）
+ * 幂等性：已在 t() 内的跳过
+ * @param {string} code - template 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function wrapMetaTitleExpressions(code) {
+  let replacements = 0;
+  let result = code;
+
+  // 匹配 mustache 中的 <identifier>.meta.title（可选链 ?. 也支持）
+  // 排除已被 t() 包裹的情况
+  result = result.replace(
+    /\{\{\s*(?!.*\bt\s*\()(?:this\.)?(\w+(?:\.\w+)*\.meta\.title)\s*\}\}/g,
+    (match, expr) => {
+      replacements += 1;
+      return `{{ t(${expr}) }}`;
+    },
+  );
+
+  // 匹配 mustache 中的 <identifier>.title（当 identifier 含 meta 或 Path 关键字时）
+  // 如 currentPathMeta.title, routeMeta.title 等
+  result = result.replace(
+    /\{\{\s*(?!.*\bt\s*\()(?:this\.)?(\w*(?:[Mm]eta|[Pp]ath)\w*\.title)\s*\}\}/g,
+    (match, expr) => {
+      replacements += 1;
+      return `{{ t(${expr}) }}`;
+    },
+  );
+
+  // 匹配 v-bind 属性中的 .meta.title（如 :title="item.meta.title"）
+  result = result.replace(
+    /(?::|v-bind:)([\w-]+)="([^"]*?\b\w+(?:\.\w+)*\.meta\.title\b[^"]*?)"/g,
+    (match, attrName, expr) => {
+      // 跳过已被 t() 包裹的
+      if (/\bt\s*\(/.test(expr)) return match;
+      replacements += 1;
+      return `:${attrName}="t(${expr.trim()})"`;
+    },
+  );
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 方向性 CSS 属性与其对应方向的映射表
+ * postcss-rtlcss 无法处理内联 :style 样式，需手动用 isRtl 区分左右
+ */
+const RTL_STYLE_MAP = {
+  "padding-left": "padding-right",
+  "padding-right": "padding-left",
+  "margin-left": "margin-right",
+  "margin-right": "margin-left",
+  left: "right",
+  right: "left",
+  "border-left": "border-right",
+  "border-right": "border-left",
+};
+
+/**
+ * 检测 :style 绑定中的方向性 CSS 属性，自动转换为 isRtl 条件表达式
+ * 仅处理对象语法 :style="{ 'padding-right': '32px' }"
+ * 转换为 :style="isRtl ? { 'padding-left': '32px' } : { 'padding-right': '32px' }"
+ * @param {string} code - template 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformRtlInlineStyles(code) {
+  let replacements = 0;
+  let result = code;
+
+  // 匹配 :style="{ ... }" 对象语法（含单引号和双引号两种属性名写法）
+  // 注意：属性值中的双引号需要特殊处理，:style 用双引号包裹时内部用单引号
+  result = result.replace(
+    /:style="(\{[^}]+\})"/g,
+    (match, styleObj) => {
+      // 检测是否已包含 isRtl（幂等性）
+      if (styleObj.includes("isRtl")) return match;
+
+      // 解析对象中的属性
+      const props = parseStyleObject(styleObj);
+      if (!props) return match;
+
+      // 检测是否有方向性属性
+      const directionalProps = props.filter((p) =>
+        Object.prototype.hasOwnProperty.call(RTL_STYLE_MAP, p.key),
+      );
+      if (directionalProps.length === 0) return match;
+
+      // 构建两个分支：RTL 和 LTR
+      const rtlProps = props.map((p) => {
+        const mappedKey = RTL_STYLE_MAP[p.key];
+        return mappedKey ? { key: mappedKey, value: p.value } : p;
+      });
+      const ltrProps = props;
+
+      const rtlObj = `{ ${rtlProps.map((p) => `'${p.key}': ${p.value}`).join(", ")} }`;
+      const ltrObj = `{ ${ltrProps.map((p) => `'${p.key}': ${p.value}`).join(", ")} }`;
+
+      replacements += 1;
+      return `:style="isRtl ? ${rtlObj} : ${ltrObj}"`;
+    },
+  );
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 解析 :style 对象字符串，提取属性键值对
+ * 支持格式：{ 'padding-right': '32px', color: 'red' }
+ * @param {string} styleObj - 样式对象字符串（含大括号）
+ * @returns {array|null} 属性数组 [{ key, value }] 或 null（解析失败）
+ */
+function parseStyleObject(styleObj) {
+  // 去掉外层大括号
+  const inner = styleObj.replace(/^\{|\}$/g, "").trim();
+  if (!inner) return [];
+
+  const props = [];
+  // 匹配 'key': value 或 "key": value 或 key: value
+  const propPattern = /(?:'([^']+)'|"([^"]+)"|(\w+))\s*:\s*('[^']*'|"[^"]*"|[^,}]+)/g;
+  let match;
+  while ((match = propPattern.exec(inner)) !== null) {
+    const key = match[1] || match[2] || match[3];
+    const value = match[4].trim();
+    // 去掉值外层的引号（保留原始字符串值含引号）
+    props.push({ key, value });
+  }
+  return props.length > 0 ? props : null;
+}
+
+/**
+ * 检测 Vue 文件中是否使用了 isRtl 但缺少 inject 声明，自动注入 inject: ["isRtl"]
+ * isRtl 由 i18nMixin 的 provide() 向子组件提供，使用前需 inject
+ * @param {string} code - Vue 文件完整源码
+ * @returns {object} 变换结果 { changed, code }
+ */
+function ensureIsRtlInject(code) {
+  // 检测是否使用了 isRtl（在 template 或 script 中）
+  const hasIsRtlUsage = /\bisRtl\b/.test(code);
+  if (!hasIsRtlUsage) return { changed: false, code };
+
+  // 检测是否已有 inject 声明 isRtl
+  const hasIsRtlInject = /inject\s*:\s*\[?[^\]]*isRtl/.test(code);
+  if (hasIsRtlInject) return { changed: false, code };
+
+  // 在 script 的 export default { 中注入 inject: ["isRtl"]
+  let result = code;
+  if (result.includes("inject:")) {
+    // 已有 inject 数组，追加 isRtl
+    result = result.replace(/(inject\s*:\s*\[)/, '$1"isRtl", ');
+  } else if (result.includes("mixins:")) {
+    // 有 mixins 但没 inject，在 mixins 前注入
+    result = result.replace(/(export\s+default\s*\{)/, '$1\n  inject: ["isRtl"],');
+  } else {
+    // 直接在 export default { 后注入
+    result = result.replace(/(export\s+default\s*\{)/, '$1\n  inject: ["isRtl"],');
+  }
+
+  return { changed: true, code: result };
+}
+
+/**
+ * 检测 script 中的 JS 级别方向性赋值，自动转换为 isRtl 三元表达式
+ * 如 style.cssFloat = "left" -> style.cssFloat = this.isRtl ? "right" : "left"
+ * @param {string} code - script 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformRtlJsAssignments(code) {
+  let replacements = 0;
+  let result = code;
+
+  // 匹配 .style.left/right = "left"/"right" 或 .cssFloat/styleFloat = "left"/"right"
+  const patterns = [
+    // style.left = "left" / style.right = "right" 等
+ /(\.\w*(?:left|right|cssFloat|styleFloat)\s*=\s*)"?(left|right)"?/g,
+  ];
+
+  patterns.forEach((pattern) => {
+    result = result.replace(pattern, (match, prefix, value) => {
+      // 跳过已包含 isRtl 的
+      if (match.includes("isRtl")) return match;
+      replacements += 1;
+      const opposite = value === "left" ? "right" : "left";
+      return `${prefix}this.isRtl ? "${opposite}" : "${value}"`;
+    });
+  });
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 将 el-form 的 label-width 从固定 px 值改为 auto
+ * 金标项目中所有 el-form 使用 label-width="auto"，让 Element UI 根据内容自动计算宽度
+ * 保留 label-width="0" 和 label-width="0px"（特殊布局用途）
+ * @param {string} code - template 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformLabelWidthToAuto(code) {
+  let replacements = 0;
+  let result = code;
+
+  // 匹配 label-width="数字px" 但不匹配 label-width="0" 和 label-width="0px"
+  result = result.replace(
+    /label-width="(\d+)px"/g,
+    (match, px) => {
+      if (px === "0") return match;
+      replacements += 1;
+      return 'label-width="auto"';
+    },
+  );
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
   };
 }
 

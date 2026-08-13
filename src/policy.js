@@ -16,16 +16,53 @@ function decideNextAction(state) {
   }
   if (!state.results.checkCli) return { action: "check_cli", reason: "检查全局 voerkai18n CLI 版本" };
   if (!state.results.doctor) return { action: "doctor", reason: "检查基建" };
-  if (state.results.doctor.summary.failCount > 0) {
-    if (!state.repairs.injectRetried && state.agentConfig.autoInject) {
-      state.repairs.injectRetried = true;
-      return { action: "inject", reason: "doctor 检测到基建缺失，重试注入" };
-    }
-    return { action: "stop", reason: "doctor 仍有 fail 项，超出当前自动修复范围" };
+ if (state.results.doctor.summary.failCount > 0) {
+   // 收集所有 fail 项的 id
+   const failIds = state.results.doctor.checks
+     .filter((c) => c.status === "fail")
+     .map((c) => c.id);
+
+   // scaffold 可修复的检查项：文件缺失类（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）
+   const scaffoldFixable = [
+     "translation-file",
+     "rtl-style",
+     "width-adaptation",
+     "component-locale",
+     "rtl-mixin",
+     "elementui-utils",
+   ];
+   // inject 可修复的检查项：代码注入类（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）
+   const injectFixable = [
+     "bootstrap-main",
+     "webpack-loader",
+     "style-imports",
+     "accept-language",
+     "route-title",
+     "layout-header-language",
+     "dependencies",
+     "scripts",
+     "postcss-config",
+   ];
+
+   const hasScaffoldFixable = failIds.some((id) => scaffoldFixable.includes(id));
+   const hasInjectFixable = failIds.some((id) => injectFixable.includes(id));
+
+  // 先重试 scaffold（修复文件缺失），再重试 inject（修复代码注入）
+  if (hasScaffoldFixable && !state.repairs.scaffoldRetried && state.agentConfig.autoScaffold) {
+    state.repairs.scaffoldRetried = true;
+    return { action: "scaffold", reason: "doctor 检测到文件缺失类 fail，重试 scaffold" };
   }
+  if (hasInjectFixable && !state.repairs.injectRetried && state.agentConfig.autoInject) {
+    state.repairs.injectRetried = true;
+    return { action: "inject", reason: "doctor 检测到基建缺失，重试注入" };
+  }
+   return { action: "stop", reason: "doctor 仍有 fail 项，超出当前自动修复范围" };
+ }
   if (!state.results.scan) return { action: "scan", reason: "扫描待处理中文" };
-  if (state.results.scan.summary.candidateCount > 0 && !state.results.apply) {
-    return { action: "apply", reason: "扫描发现待国际化文案，执行自动改写" };
+  // apply 总是执行：即使 scan 为 0，apply 还需要处理 label-width 转换、isRtl 样式转换等
+  // 这些变换不依赖中文扫描结果，且 apply 本身是幂等的
+  if (!state.results.apply) {
+    return { action: "apply", reason: "执行自动改写（中文包裹、label-width 转换、isRtl 样式等）" };
   }
   if (!state.results.extract) return { action: "extract", reason: "提取词条" };
   if (!state.results.translate) return { action: "translate", reason: "执行翻译" };

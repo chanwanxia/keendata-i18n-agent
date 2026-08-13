@@ -15,6 +15,7 @@ function buildSystemPrompt(projectRoot, config) {
 
 将目标项目的国际化流程完整执行到可验证的完成状态。最终成功标准：
 1. doctor 检查无 fail 项
+   （所有需要修复的问题都是 fail，warn 仅用于 preset 未命中的信息性提示）
 2. scan 发现的未国际化中文候选数为 0
 3. validate 翻译校验无缺失、无问题（包括无占位式无效翻译）
 4. compile 编译成功
@@ -38,6 +39,7 @@ function buildSystemPrompt(projectRoot, config) {
 4. doctor — 检查基建完整性
 5. scan — 扫描未国际化中文
 6. apply — 自动改写可安全处理的中文文案（先用 dryRun 预览，再正式执行；写入后自动 eslint --fix）
+   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。
 7. extract — 提取词条到翻译源文件
 8. translate — 补齐缺失翻译（推荐使用 llm provider 获得最佳翻译质量）
 9. validate — 校验翻译
@@ -46,6 +48,14 @@ function buildSystemPrompt(projectRoot, config) {
 
 ## 幂等性与重复运行
 
+## doctor 修复策略
+
+doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提示，无需修复）。如果 doctor 返回 fail 项，必须修复后才能继续后续流程：
+- 文件缺失类 fail（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）：重新执行 scaffold 修复
+- 代码注入类 fail（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）：重新执行 inject 修复
+- 无法自动修复的 fail（kd-components-version 版本过低、global-cli 版本不匹配）：输出明确提示让用户手动处理，不阻塞其他修复
+- 修复后重新执行 doctor 确认 fail 项已消除
+
 - apply 和 inject 都是幂等的：重复执行不会产生重复包裹或重复注入
 - 如果重复 run 发现已有嵌套 t(t(...)) 或重复 import，cleanup_i18n 会自动修复
 - apply 和 inject 写入后会自动执行 eslint --fix 修复格式问题（多余空格等）
@@ -53,8 +63,9 @@ function buildSystemPrompt(projectRoot, config) {
 ## 翻译质量保障（关键）
 
 translate 之后必须执行 validate，并检查结果：
-- 如果 validate 返回 issues 中包含 type 为 "placeholder_translation" 的问题，说明存在占位式无效翻译（如 "Text 1"），必须重新翻译。
-- 重新翻译时，调用 translate_entries 并传入 force=true，这会清空所有翻译并重新调用 LLM。
+- translate 默认是增量模式：只翻译缺失或无效的条目（空翻译、占位式无效翻译如 "Text 1"），不会清空已有有效翻译。
+- 如果 validate 返回 issues 中包含 type 为 "placeholder_translation" 的问题，说明存在占位式无效翻译（如 "Text 1"），直接重新执行 translate（不传 force=true），它会自动检测并只重译无效条目。
+- **极慎用 force=true**：force=true 会清空所有翻译重新翻译，代价极大（260+ 条词条 × 3 语言 = 780+ 次 LLM 调用）。仅在增量翻译多次失败后才考虑使用。
 - 如果 LLM 翻译持续失败（多次重试后仍有问题），检查 LLM_API_KEY 是否设置、LLM 接口是否可达。
 - 不要在 validate 未通过时执行 compile，否则会编译出错误的语言包。
 - validate 通过后再执行 compile。
@@ -64,7 +75,7 @@ translate 之后必须执行 validate，并检查结果：
 - 工具返回 error 时，仔细阅读错误信息，理解问题原因，采取纠正措施
 - 可以用 read_file 读取相关文件，理解上下文后用 write_file 修复
 - 可以重试失败的工具
-- 如果 translate 返回 0 条翻译但 validate 仍有问题，尝试用 force=true 重新翻译
+- 如果 translate 返回 0 条翻译但 validate 仍有问题，先检查 default.json 中具体哪些条目有问题，用 read_file 查看后重新 translate（增量模式）
 - 不要遇到错误就直接停止，要尽力修复
 
 ## 文件编辑

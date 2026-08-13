@@ -45,18 +45,19 @@ function listPresets() {
 function matchPreset(preset, profile, projectRoot) {
   if (preset.id !== "keendata-vue2-voerkai") return false;
 
-  const requiredFiles = [
-    "src/languages/i18n-plugin/i18nMixin.js",
-    "src/mixins/i18n-width-mixin.js",
-    "src/styles/i18n-style.scss",
-    "src/utils/elementui-utils.js",
-  ];
-
-  const hasRequiredFiles = requiredFiles.every((file) => fs.existsSync(path.join(projectRoot, file)));
-  const hasRequiredDeps = profile.hasVoerka && profile.hasVueI18n;
+  // preset 匹配基于项目类型（框架 + UI 库），不要求 i18n 基建已就位
+  // doctor 的职责是检查哪些东西缺失，所以不能因为缺东西就不匹配 preset
   const hasKeenDataUi = profile.dependencies.includes("@kd/components");
 
-  return profile.framework === "vue2" && hasRequiredDeps && hasRequiredFiles && hasKeenDataUi;
+  // 至少满足以下条件之一才算 KeenData Vue2 项目：
+  // 1. 已安装 voerkai18n（说明正在接入或已接入 i18n）
+  // 2. 已存在 i18n 基建文件（说明 scaffold 已执行过）
+  const hasVoerka = profile.hasVoerka;
+  const hasInfraFiles = fs.existsSync(
+    path.join(projectRoot, "src/languages"),
+  );
+
+  return profile.framework === "vue2" && hasKeenDataUi && (hasVoerka || hasInfraFiles);
 }
 
 module.exports = {

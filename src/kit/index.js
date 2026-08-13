@@ -20,6 +20,7 @@ const { scanHardcodedChinese } = require("./scan");
 const { translateTranslations } = require("./translate");
 const {
   extractPlaceholders,
+  fixIdMapKeys,
   inspectGeneratedFiles,
   isPlaceholderCompatible,
   validateTranslationObject,
@@ -38,6 +39,7 @@ module.exports = {
   detectProjectProfile,
   ensurePostcssConfig,
   extractPlaceholders,
+  fixIdMapKeys,
   inject,
   injectAcceptLanguage,
   injectAppVue,

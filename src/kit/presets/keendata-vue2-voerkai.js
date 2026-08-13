@@ -187,6 +187,13 @@ const preset = {
       translateMetaTitle: true,
       fallbackTitle: "数据中台",
     },
+    layoutHeader: {
+      file: "src/layout/layout-header/index.vue",
+      requireMixin: true,
+      requireLanguageSwitcher: true,
+      languageSwitcherComponent: "kd-select",
+      languageSwitcherProps: ["activeLanguage", "languages", "changeLanguage"],
+    },
     validation: {
       hardcodedChineseScan: true,
       scanExcludePrefixes: ["src/languages/formatters/", "src/router/modules/"],

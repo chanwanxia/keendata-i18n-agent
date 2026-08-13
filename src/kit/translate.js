@@ -395,8 +395,13 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   const batchSize = 50;
   const sourceTexts = [...new Set(missingEntries.map((e) => e.sourceText))];
   let translatedCount = 0;
+  const totalBatches = Math.ceil(sourceTexts.length / batchSize);
 
   for (let i = 0; i < sourceTexts.length; i += batchSize) {
+    const batchNum = Math.floor(i / batchSize) + 1;
+    console.log(
+      `[i18n-kit] LLM 翻译进度: 批次 ${batchNum}/${totalBatches} (${sourceTexts.length} 条待翻译)`,
+    );
     const batch = sourceTexts.slice(i, i + batchSize);
     try {
       const results = await callLlmTranslate(

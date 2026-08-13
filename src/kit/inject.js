@@ -24,6 +24,7 @@ const REQUIRED_DEPS = {
   dependencies: {
     "@voerkai18n/runtime": "^2.1.13",
     "@voerkai18n/vue2": "^2.1.13",
+    "vue-i18n": "8.28.2",
   },
   devDependencies: {
     "@voerkai18n/cli": "^2.1.13",
@@ -53,9 +54,11 @@ function inject(projectRoot, profile, config, options = {}) {
     packageJson: injectPackageJson(projectRoot, options),
     mainJs: injectMainJs(projectRoot, options),
     vueConfig: injectVueConfig(projectRoot, options),
-    appVue: injectAppVue(projectRoot, options),
-    interceptors: injectAcceptLanguage(projectRoot, options),
-  };
+   appVue: injectAppVue(projectRoot, options),
+   interceptors: injectAcceptLanguage(projectRoot, options),
+    layoutHeader: injectLayoutHeader(projectRoot, options),
+    kdComponentsVersion: checkKdComponentsVersion(projectRoot),
+ };
 
   // 对被修改的文件统一执行 eslint --fix，修复注入引入的格式问题
   const { runEslintFix } = require("./eslint");
@@ -63,10 +66,13 @@ function inject(projectRoot, profile, config, options = {}) {
   if (results.mainJs.updated) modifiedFiles.push("src/main.js");
   if (results.appVue.updated) modifiedFiles.push("src/App.vue");
   if (results.vueConfig.updated) modifiedFiles.push("vue.config.js");
-  if (results.interceptors.updated && results.interceptors.file) {
-    modifiedFiles.push(results.interceptors.file);
-  }
-  if (modifiedFiles.length > 0) {
+ if (results.interceptors.updated && results.interceptors.file) {
+   modifiedFiles.push(results.interceptors.file);
+ }
+ if (results.layoutHeader.updated && results.layoutHeader.file) {
+   modifiedFiles.push(results.layoutHeader.file);
+ }
+ if (modifiedFiles.length > 0) {
     runEslintFix(projectRoot, modifiedFiles);
   }
 
@@ -77,9 +83,11 @@ function inject(projectRoot, profile, config, options = {}) {
       mainJsUpdated: results.mainJs.updated,
       vueConfigUpdated: results.vueConfig.updated,
       appVueUpdated: results.appVue.updated,
-      interceptorsUpdated: results.interceptors.updated,
-    },
-    details: results,
+     interceptorsUpdated: results.interceptors.updated,
+     layoutHeaderUpdated: results.layoutHeader.updated,
+     kdComponentsWarning: results.kdComponentsVersion || null,
+   },
+   details: results,
   };
 }
 
@@ -192,7 +200,7 @@ function injectPackageJson(projectRoot, options = {}) {
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
  */
-function injectMainJs(projectRoot, options = {}) {
+function injectMainJs(projectRoot, _options = {}) {
   const mainPath = path.join(projectRoot, "src/main.js");
   if (!fs.existsSync(mainPath)) {
     return { updated: false, message: "src/main.js 不存在" };
@@ -200,8 +208,20 @@ function injectMainJs(projectRoot, options = {}) {
 
   let source = fs.readFileSync(mainPath, "utf8");
 
-  if (source.includes("i18nPlugin") && !options.force) {
-    return { updated: false, message: "main.js 已包含 i18n 注入" };
+  // 幂等性检查：已包含 i18nPlugin 时，仍需检查 i18n 实例导入是否完整
+  if (source.includes("i18nPlugin")) {
+    // 检查是否有 import { i18n } from "@/utils/elementui-utils"
+    // 缺失时补充导入和 new Vue({ i18n }) 实例选项
+    const i18nImportPattern = /import\s*\{\s*i18n\s*\}\s*from\s*["']@\/utils\/elementui-utils["'];?/;
+    if (i18nImportPattern.test(source)) {
+      return { updated: false, message: "main.js 已包含 i18n 注入" };
+    }
+    // 补充 i18n 实例导入和 Vue 实例选项
+    source = ensureI18nInstance(source);
+    fs.writeFileSync(mainPath, source, "utf8");
+    const { runEslintFix } = require("./eslint");
+    runEslintFix(projectRoot, ["src/main.js"]);
+    return { updated: true, message: "main.js 补充了 i18n 实例导入" };
   }
 
   let ast;
@@ -339,6 +359,7 @@ function insertImportsAsString(code, importsToAdd) {
 function replaceOldVueI18n(original, output) {
   let result = output;
 
+  // 情况 1：旧式 default import（import i18n from "..."）
   const oldPatterns = [
     /import\s+i18n\s+from\s+["']@\/assets\/lang\/index["'];?/g,
     /import\s+i18n\s+from\s+["'][^"']*lang[^"']*["'];?/g,
@@ -352,6 +373,10 @@ function replaceOldVueI18n(original, output) {
       );
     }
   });
+
+  // 情况 2：副作用导入（import "@/utils/elementui-utils"）-> 命名导入
+  // 情况 3：确保 new Vue({ i18n }) 实例选项
+  result = ensureI18nInstance(result);
 
   return result;
 }
@@ -370,11 +395,13 @@ function injectVueConfig(projectRoot, options = {}) {
 
   let content = fs.readFileSync(configPath, "utf8");
 
-  if (content.includes("voerkai18n-loader") && !options.force) {
-    return {
-      updated: false,
-      message: "vue.config.js 已包含 voerkai18n-loader",
-    };
+  // 幂等性：已包含 voerkai18n-loader 时跳过（force 模式下先清理再重新注入）
+  if (content.includes("voerkai18n-loader")) {
+    if (!options.force) {
+      return { updated: false, message: "vue.config.js 已包含 voerkai18n-loader" };
+    }
+    // force 模式：先移除所有已存在的 voerkai18n-loader 规则块，再重新注入一个
+    content = removeVoerkai18nLoaderRules(content);
   }
 
   const loaderRule = `
@@ -414,12 +441,27 @@ function injectVueConfig(projectRoot, options = {}) {
 }
 
 /**
+ * 移除 vue.config.js 中所有已存在的 voerkai18n-loader 规则块
+ * 用于 force 模式下先清理再重新注入，避免重复规则
+ * @param {string} content - vue.config.js 内容
+ * @returns {string} 清理后的内容
+ */
+function removeVoerkai18nLoaderRules(content) {
+  // 移除包含 voerkai18n-loader 的完整规则对象 { test: ..., use: [{ loader: "voerkai18n-loader", ... }], ... }
+  // 匹配从 { 开始到 }, 结束、中间包含 voerkai18n-loader 的块
+  return content.replace(
+    /\{\s*test:\s*\/\\\.\(js\|vue\)\$\/,\s*use:\s*\[[\s\S]*?voerkai18n-loader[\s\S]*?\},?\s*$/gm,
+    "",
+  );
+}
+
+/**
  * 向 App.vue 注入 i18nMixin 和路由标题逻辑
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
  */
-function injectAppVue(projectRoot, options = {}) {
+function injectAppVue(projectRoot, _options = {}) {
   const appPath = path.join(projectRoot, "src/App.vue");
   if (!fs.existsSync(appPath)) {
     return { updated: false, message: "src/App.vue 不存在" };
@@ -427,8 +469,20 @@ function injectAppVue(projectRoot, options = {}) {
 
   let content = fs.readFileSync(appPath, "utf8");
 
-  if (content.includes("i18nMixin") && !options.force) {
-    return { updated: false, message: "App.vue 已包含 i18nMixin" };
+  // 幂等性检查
+  if (content.includes("i18nMixin")) {
+    // 已注入 i18nMixin，但仍需检查 $route watch 是否为标准模式
+    const standardWatchPattern = /this\.t\(route\?\.meta\?\.title\s*\?\?\s*"/;
+    if (standardWatchPattern.test(content)) {
+      return { updated: false, message: "App.vue 已包含 i18nMixin 和标准 watch" };
+    }
+    // 有 i18nMixin 但 watch 不是标准模式，替换 watch
+    content = replaceRouteWatch(content, projectRoot);
+    if (content) {
+      fs.writeFileSync(appPath, content, "utf8");
+      return { updated: true, message: "App.vue 替换了 $route watch 为标准模式" };
+    }
+    return { updated: false, message: "App.vue 已包含 i18nMixin，watch 无需替换" };
   }
 
   const mixinImport =
@@ -445,20 +499,98 @@ function injectAppVue(projectRoot, options = {}) {
     );
   }
 
-  if (!content.includes("document.title")) {
-    const routeWatchPattern = /(\$route:\s*\{[\s\S]*?handler\s*\([^)]*\)\s*\{)/;
-    if (routeWatchPattern.test(content)) {
-      const titleLogic = `
-        const subTitle = this.t(route?.meta?.title ?? "通用配置");
-        const prefix = this.t(this.tabPrefix) || this.t("数据中台");
-        document.title = subTitle ? \`\${subTitle} - \${prefix}\` : prefix;
-`;
-      content = content.replace(routeWatchPattern, "$1" + titleLogic);
-    }
+  // 替换 $route watch 为标准模式
+  const replaced = replaceRouteWatch(content, projectRoot);
+  if (replaced) {
+    content = replaced;
   }
+
 
   fs.writeFileSync(appPath, content, "utf8");
   return { updated: true };
+}
+
+/**
+ * 替换 App.vue 中的 $route watch 为标准 i18n 模式
+ * 从原 watch 中提取项目特定的 fallback 标题（如"数据湖"），替换为标准模式
+ * @param {string} content - App.vue 内容
+ * @param {string} projectRoot - 项目根路径（用于提取 fallback 标题）
+ * @returns {string|null} 替换后的内容，null 表示无需替换
+ */
+function replaceRouteWatch(content, _projectRoot) {
+  // 提取原 watch 中的 fallback 标题
+  let fallbackTitle = "通用配置";
+  const fallbackPatterns = [
+    /\?\?\s*this\.t\(["']([^"']+)["']\)/,
+    /\?\?\s*["']([^"']+)["']/,
+  ];
+  for (const pattern of fallbackPatterns) {
+    const match = content.match(pattern);
+    if (match && match[1]) {
+      fallbackTitle = match[1];
+      break;
+    }
+  }
+
+  // 标准模式：替换整个 $route watch handler 内容
+  // 标准模式：相对缩进（indent 前缀由调用方添加）
+  // $route: 0 空格相对缩进，handler 2 空格，body 4 空格
+  const standardWatch = [
+    "$route: {",
+    "  handler(route) {",
+    '    const subTitle = this.t(route?.meta?.title ?? "' + fallbackTitle + '");',
+    '    const prefix = this.t(this.tabPrefix) || this.t("数据中台");',
+    "    document.title = subTitle ? `${subTitle} - ${prefix}` : prefix;",
+    "  },",
+    "  deep: true,",
+    "  immediate: true,",
+    "},",
+  ].join("\n");
+
+  // 匹配整个 $route watch 块（需要处理嵌套大括号）
+  // 从 $route: { 开始，匹配到对应的闭合 }（考虑 handler() {} 内部的大括号）
+  const routeStart = content.indexOf("$route:");
+
+  // 从原 $route: 前的空格获取缩进（默认 4 空格）
+  const indentMatch = routeStart > 0 ? content.substring(0, routeStart).match(/([ \t]*)$/) : null;
+  const indent = indentMatch ? indentMatch[1] : "    ";
+  const indentedWatch = standardWatch.split("\n").map((line) => indent + line).join("\n");
+
+  if (routeStart === -1) {
+    // 没有 $route watch，在 watch: { 后注入
+    if (content.includes("watch:")) {
+      return content.replace(/(watch:\s*\{)/, "$1\n" + indentedWatch);
+    }
+    return null;
+  }
+
+  // 从 $route: { 开始，按大括号深度匹配到闭合的 },
+  const braceStart = content.indexOf("{", routeStart);
+  if (braceStart === -1) return null;
+  let depth = 0;
+  let endIdx = braceStart;
+  for (let i = braceStart; i < content.length; i++) {
+    if (content[i] === "{") depth++;
+    else if (content[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        endIdx = i + 1;
+        break;
+      }
+    }
+  }
+  // 包含 trailing comma
+  if (content[endIdx] === ",") endIdx++;
+
+  // oldWatch = content.substring(routeStart, endIdx);
+  return content.substring(0, routeStart - indent.length) + indentedWatch + content.substring(endIdx);
+
+  // 如果没有 $route watch，在 watch: { 后注入
+  if (content.includes("watch:")) {
+    return content.replace(/(watch:\s*\{)/, "$1\n" + indentedWatch);
+  }
+
+  return null;
 }
 
 /**
@@ -467,7 +599,7 @@ function injectAppVue(projectRoot, options = {}) {
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
  */
-function injectAcceptLanguage(projectRoot, options = {}) {
+function injectAcceptLanguage(projectRoot, _options = {}) {
   const utilsDir = path.join(projectRoot, "src/utils");
   if (!fs.existsSync(utilsDir)) {
     return { updated: false, message: "src/utils 目录不存在" };
@@ -480,7 +612,8 @@ function injectAcceptLanguage(projectRoot, options = {}) {
     const content = fs.readFileSync(filePath, "utf8");
 
     if (!content.includes("interceptors.request.use")) continue;
-    if (content.includes("Accept-Language") && !options.force) continue;
+    // 幂等性：已包含 Accept-Language 则跳过，force 模式也不重新注入
+    if (content.includes("Accept-Language")) continue;
 
     const headerInjection = `
   const languageMap = { zh: "zh-CN", en: "en-US", jp: "ja-JP", ar: "ar" };
@@ -508,6 +641,196 @@ function injectAcceptLanguage(projectRoot, options = {}) {
   return { updated: false, message: "未找到合适的请求拦截器" };
 }
 
+/**
+ * 向 layout-header 组件注入语言切换器（kd-select）和 i18nMixin
+ * 查找策略：优先 src/layout/layout-header/index.vue，否则搜索 src/layout/ 下含 right-box 的 .vue 文件
+ * @param {string} projectRoot - 目标项目根路径
+ * @param {object} options - 选项 { force: boolean }
+ * @returns {object} 注入结果
+ */
+function injectLayoutHeader(projectRoot, _options = {}) {
+  const defaultPath = path.join(projectRoot, "src/layout/layout-header/index.vue");
+  let headerPath = defaultPath;
+  let headerRelative = "src/layout/layout-header/index.vue";
+
+  // 如果默认路径不存在，搜索 src/layout/ 下含 right-box 的 .vue 文件
+  if (!fs.existsSync(headerPath)) {
+    const layoutDir = path.join(projectRoot, "src/layout");
+    if (!fs.existsSync(layoutDir)) {
+      return { updated: false, message: "src/layout 目录不存在" };
+    }
+    const found = findHeaderComponent(layoutDir);
+    if (!found) {
+      return { updated: false, message: "未找到 layout-header 组件" };
+    }
+    headerPath = found;
+    headerRelative = path.relative(projectRoot, found);
+  }
+
+  let content = fs.readFileSync(headerPath, "utf8");
+
+  // 幂等性检查：已包含 i18nMixin 则跳过
+  // force 模式下也跳过 —— layout-header 一旦注入 i18nMixin 就不会"内容不完整"
+  if (content.includes("i18nMixin")) {
+    return { updated: false, message: "layout-header 已包含 i18nMixin", file: headerRelative };
+  }
+
+  // 1. 注入 import { i18nMixin }
+  if (!content.includes("i18nMixin")) {
+    const mixinImport = 'import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";';
+    content = content.replace(/(<script[^>]*>)/, "$1\n" + mixinImport);
+  }
+
+  // 2. 注入 mixins: [i18nMixin()]
+  if (content.includes("mixins:")) {
+    if (!content.includes("i18nMixin()")) {
+      content = content.replace(/(mixins:\s*\[)/, "$1i18nMixin(), ");
+    }
+  } else {
+    content = content.replace(
+      /(export\s+default\s*\{)/,
+      "$1\n  mixins: [i18nMixin()],",
+    );
+  }
+
+  // 3. 在 right-box 区域注入语言切换器
+  const languageSwitcher = [
+    "      <!-- 语言切换器 -->",
+    "      <kd-select",
+    '        :value="activeLanguage"',
+    '        :options="languages"',
+    '        label="title"',
+    '        val="name"',
+    '        width="160"',
+    '        @change="changeLanguage"',
+    "      ></kd-select>",
+  ].join("\n");
+
+  // 匹配 <div class="right-box"> 内部内容
+  const rightBoxPattern = /(<div\s+class="right-box"\s*>)([\s\S]*?)(<\/div>)/;
+  if (rightBoxPattern.test(content)) {
+    content = content.replace(rightBoxPattern, (match, openTag, inner, closeTag) => {
+      // 如果已有 activeLanguage 则跳过注入
+      if (inner.includes("activeLanguage")) return match;
+      const trimmedInner = inner.trim();
+      const separator = trimmedInner ? "\n" + trimmedInner + "\n    " : "\n    ";
+      return openTag + "\n" + languageSwitcher + separator + closeTag;
+    });
+  }
+
+  fs.writeFileSync(headerPath, content, "utf8");
+  return { updated: true, file: headerRelative };
+}
+
+/**
+ * 在 layout 目录下递归搜索包含 right-box class 的 .vue 文件
+ * @param {string} dir - 搜索目录
+ * @returns {string|null} 文件路径或 null
+ */
+function findHeaderComponent(dir) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = findHeaderComponent(fullPath);
+      if (found) return found;
+    } else if (entry.name.endsWith(".vue")) {
+      const content = fs.readFileSync(fullPath, "utf8");
+      if (content.includes("right-box")) {
+        return fullPath;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 检查 @kd/components 版本是否 >= 5.0.0（v5 起才有 dist/locale/lang/* 国际化文件）
+ * 仅输出 warn，不阻塞流程
+ * @param {string} projectRoot - 目标项目根路径
+ * @returns {object|null} 版本检查结果，null 表示未找到 @kd/components
+ */
+function checkKdComponentsVersion(projectRoot) {
+  const pkgPath = path.join(projectRoot, "package.json");
+  if (!fs.existsSync(pkgPath)) return null;
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const version =
+    (pkg.dependencies && pkg.dependencies["@kd/components"]) ||
+    (pkg.devDependencies && pkg.devDependencies["@kd/components"]);
+
+  if (!version) {
+    return { ok: false, message: "未检测到 @kd/components，elementui-utils.js 中的 KD 组件 locale 将不可用" };
+  }
+
+  // 提取版本号中的主版本号（支持 ^5.2.1, ~5.0.0, 5.x 等格式）
+  const match = version.match(/(\d+)\./);
+  if (!match) {
+    return { ok: false, message: `@kd/components 版本格式无法解析: ${version}` };
+  }
+
+  const major = parseInt(match[1], 10);
+  if (major < 5) {
+    return {
+      ok: false,
+      message: `@kd/components 版本 ${version} 过低，国际化 locale 文件需要 v5+，请升级: pnpm add @kd/components@^5`,
+    };
+  }
+
+  return { ok: true, message: `@kd/components ${version} 版本满足要求` };
+}
+
+/**
+ * 确保 main.js 中有 i18n 实例的命名导入和 Vue 实例选项
+ * 处理三种情况：
+ * 1. 已有 import { i18n } from "@/utils/elementui-utils" -> 跳过
+ * 2. 已有 import "@/utils/elementui-utils"（副作用导入）-> 转换为命名导入
+ * 3. 没有任何 elementui-utils 导入 -> 新增命名导入
+ * 然后确保 new Vue({...}) 中包含 i18n 实例选项
+ * @param {string} source - main.js 源码
+ * @returns {string} 处理后的源码
+ */
+function ensureI18nInstance(source) {
+  let result = source;
+
+  const namedImportPattern = /import\s*\{\s*i18n\s*\}\s*from\s*["']@\/utils\/elementui-utils["'];?/;
+  const sideEffectImportPattern = /import\s+["']@\/utils\/elementui-utils["'];?/;
+
+  if (!namedImportPattern.test(result)) {
+    if (sideEffectImportPattern.test(result)) {
+      // 副作用导入 -> 命名导入
+      result = result.replace(
+        sideEffectImportPattern,
+        'import { i18n } from "@/utils/elementui-utils";',
+      );
+    } else {
+      // 无导入 -> 新增命名导入
+      const importStatement = 'import { i18n } from "@/utils/elementui-utils";\n';
+      const lines = result.split("\n");
+      let lastImportIndex = -1;
+      for (let i = 0; i < lines.length; i += 1) {
+        const trimmed = lines[i].trim();
+        if (trimmed.startsWith("import ") || trimmed.startsWith("require(")) {
+          lastImportIndex = i;
+        }
+      }
+      if (lastImportIndex >= 0) {
+        lines.splice(lastImportIndex + 1, 0, importStatement);
+        result = lines.join("\n");
+      } else {
+        result = importStatement + result;
+      }
+    }
+  }
+
+  // 确保 new Vue({...}) 中包含 i18n 实例选项
+  if (!/new\s+Vue\s*\(\s*\{[^}]*\bi18n\b/.test(result)) {
+   result = result.replace(/(new\s+Vue\s*\(\s*\{)/, "$1\n    i18n,");
+ }
+
+  return result;
+}
+
 module.exports = {
   inject,
   checkGlobalCliVersion,
@@ -516,5 +839,7 @@ module.exports = {
   injectVueConfig,
   injectAppVue,
   injectAcceptLanguage,
+  injectLayoutHeader,
+  checkKdComponentsVersion,
   REQUIRED_DEPS,
 };

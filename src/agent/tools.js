@@ -95,13 +95,21 @@ function createTools(projectRoot, config) {
       },
     },
     {
-      name: "scaffold",
-      description:
-        "写入 i18n 基础设施文件（languages 目录、mixin、样式等）。返回创建和跳过的文件数。",
-      parameters: { type: "object", properties: {} },
-      execute() {
+    name: "scaffold",
+    description:
+        "写入 i18n 基础设施文件（languages 目录、mixin、样式等）。返回创建和跳过的文件数。force=true 时覆盖已存在的文件（用于修复内容不完整的情况）。",
+      parameters: {
+        type: "object",
+        properties: {
+          force: {
+            type: "boolean",
+            description: "是否强制覆盖已存在文件，用于 doctor 检测到文件内容不完整时修复。默认 false。",
+          },
+        },
+      },
+      execute(args) {
         const profile = kit.detectProjectProfile(projectRoot);
-        const report = kit.scaffold(projectRoot, profile, config);
+       const report = kit.scaffold(projectRoot, profile, config, { force: Boolean(args.force) });
         return {
           ok: true,
           summary: report.summary,
@@ -109,14 +117,22 @@ function createTools(projectRoot, config) {
         };
       },
     },
-   {
-     name: "inject",
-     description:
-        "向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码。注入后自动执行 eslint --fix 修复格式。返回各文件注入状态。重复执行是幂等的：已注入的代码不会被重复注入。",
-     parameters: { type: "object", properties: {} },
-      execute() {
+  {
+    name: "inject",
+    description:
+        "向 main.js / vue.config.js / App.vue / interceptors / layout-header 注入 i18n 代码。注入后自动执行 eslint --fix 修复格式。返回各文件注入状态。重复执行是幂等的：已注入的代码不会被重复注入。force=true 时强制重新注入（用于修复内容不完整的情况）。",
+     parameters: {
+       type: "object",
+       properties: {
+         force: {
+           type: "boolean",
+           description: "是否强制重新注入，用于 doctor 检测到问题时覆盖修复。默认 false。",
+         },
+       },
+     },
+      execute(args) {
         const profile = kit.detectProjectProfile(projectRoot);
-        const report = kit.inject(projectRoot, profile, config);
+       const report = kit.inject(projectRoot, profile, config, { force: Boolean(args.force) });
         return {
           ok: true,
           details: report.details,
@@ -150,10 +166,10 @@ function createTools(projectRoot, config) {
       },
     },
    {
-     name: "apply_i18n",
-     description:
-        "对目标项目执行 i18n 自动改写，将中文文案包裹为 t() 调用。基于 AST 操作，安全可靠。写入后自动执行 eslint --fix 修复格式。dryRun=true 时仅预览不写入。重复执行是幂等的：已包裹的 t() 不会被重复包裹，嵌套 t(t(...)) 会被自动展开。",
-     parameters: {
+    name: "apply_i18n",
+    description:
+        "对目标项目执行 i18n 自动改写：中文文案包裹为 t()、.meta.title 包裹、el-form label-width 转为 auto、isRtl 内联样式转换。即使 scan 结果为 0 也必须执行（label-width 和 isRtl 转换不依赖中文扫描）。基于 AST 操作，安全可靠。写入后自动执行 eslint --fix。dryRun=true 时仅预览。幂等：重复执行不产生重复包裹或转换。",
+    parameters: {
         type: "object",
         properties: {
           dryRun: {
@@ -208,9 +224,9 @@ function createTools(projectRoot, config) {
       },
     },
     {
-      name: "translate_entries",
+    name: "translate_entries",
       description:
-        "自动补齐翻译源文件中缺失或无效的翻译。provider 可选 glossary/llm/baidu/command。force=true 时清空所有翻译重新翻译（用于修复占位式无效翻译）。",
+        "自动补齐翻译源文件中缺失或无效的翻译（增量模式，不破坏已有有效翻译）。provider 可选 glossary/llm/baidu/command。自动检测空翻译和占位式无效翻译（如 Text 1），只重新翻译这些条目。force=true 会清空所有翻译重新翻译，代价极大，极慎用。",
       parameters: {
         type: "object",
         properties: {
@@ -222,7 +238,7 @@ function createTools(projectRoot, config) {
           force: {
             type: "boolean",
             description:
-              "是否强制清空所有翻译重新翻译，用于修复占位式无效翻译（如 Text 1）。默认 false。",
+              "是否强制清空所有翻译重新翻译。代价极大（所有词条 × 所有语言），仅在增量翻译多次失败后使用。默认 false。",
           },
         },
       },
@@ -260,7 +276,7 @@ function createTools(projectRoot, config) {
       },
     },
     {
-      name: "compile_languages",
+    name: "compile_languages",
       description:
         "执行语言包编译命令（voerkai18n compile）。捕获 stdout 和 stderr 返回。",
       parameters: { type: "object", properties: {} },
@@ -270,6 +286,17 @@ function createTools(projectRoot, config) {
           projectRoot,
           "agent 执行语言包编译",
         );
+        // compile 后自动修复 idMap.js 中未加引号的中文 key
+        if (result.status === 0) {
+          const fixResult = kit.fixIdMapKeys(projectRoot);
+          return {
+            ok: true,
+            command: config.compileCommand,
+            stdout: result.stdout.slice(0, 2000),
+            stderr: result.stderr.slice(0, 2000),
+            idMapFixed: fixResult.fixed,
+          };
+        }
         return {
           ok: result.status === 0,
           command: config.compileCommand,

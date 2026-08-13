@@ -94,10 +94,11 @@ function createInitialState(projectRoot, agentConfig, flags) {
         path.join(projectRoot, initialConfig.translationFile),
       ),
     },
-    repairs: {
-      glossaryRepairTried: false,
-      injectRetried: false,
-    },
+   repairs: {
+     glossaryRepairTried: false,
+     injectRetried: false,
+     scaffoldRetried: false,
+   },
     results: {
       scaffold: null,
       inject: null,
@@ -194,28 +195,32 @@ async function executeAction(action, state, flags) {
     return null;
   }
 
-  if (action === "scaffold") {
-    if (!state.agentConfig.autoScaffold) {
-      return { stop: true, ok: false, message: "未开启 autoScaffold" };
-    }
-    const profile = kit.detectProjectProfile(projectRoot);
-    const config = kit.loadProjectConfig(projectRoot);
-    state.results.scaffold = kit.scaffold(projectRoot, profile, config);
-    console.log(
-      `[i18n-agent] scaffold: 创建 ${state.results.scaffold.summary.createdCount} 个文件, 跳过 ${state.results.scaffold.summary.skippedCount} 个`,
-    );
-    return null;
+ if (action === "scaffold") {
+   if (!state.agentConfig.autoScaffold) {
+     return { stop: true, ok: false, message: "未开启 autoScaffold" };
+   }
+   const profile = kit.detectProjectProfile(projectRoot);
+   const config = kit.loadProjectConfig(projectRoot);
+   // 如果是 doctor 修复触发的重试，使用 force 覆盖内容不完整的文件
+   const force = Boolean(state.repairs.scaffoldRetried);
+   state.results.scaffold = kit.scaffold(projectRoot, profile, config, { force });
+   console.log(
+     `[i18n-agent] scaffold${force ? " (force)" : ""}: 创建 ${state.results.scaffold.summary.createdCount} 个文件, 跳过 ${state.results.scaffold.summary.skippedCount} 个`,
+   );
+   return null;
   }
 
-  if (action === "inject") {
-    if (!state.agentConfig.autoInject) {
-      return { stop: true, ok: false, message: "未开启 autoInject" };
-    }
-    const profile = kit.detectProjectProfile(projectRoot);
-    const config = kit.loadProjectConfig(projectRoot);
-    state.results.inject = kit.inject(projectRoot, profile, config);
-    console.log("[i18n-agent] inject: 依赖注入和代码改造完成");
-    return null;
+ if (action === "inject") {
+   if (!state.agentConfig.autoInject) {
+     return { stop: true, ok: false, message: "未开启 autoInject" };
+   }
+   const profile = kit.detectProjectProfile(projectRoot);
+   const config = kit.loadProjectConfig(projectRoot);
+   // 如果是 doctor 修复触发的重试，使用 force 重新注入
+   const force = Boolean(state.repairs.injectRetried);
+   state.results.inject = kit.inject(projectRoot, profile, config, { force });
+   console.log(`[i18n-agent] inject${force ? " (force)" : ""}: 依赖注入和代码改造完成`);
+   return null;
   }
 
   if (action === "check_cli") {
@@ -315,21 +320,28 @@ async function executeAction(action, state, flags) {
     return null;
   }
 
-  if (action === "compile") {
-    const status = kit.runShellCommand(
-      config.compileCommand,
-      projectRoot,
-      "agent 执行语言包编译",
-    );
-    state.results.compile = {
-      ok: status === 0,
-      command: config.compileCommand,
-    };
-    state.results.generated = kit.inspectGeneratedFiles(projectRoot, config);
-    if (!state.results.compile.ok || !state.results.generated.ok) {
-      return { stop: true, ok: false, message: "compile 执行失败或产物缺失" };
-    }
-  }
+ if (action === "compile") {
+   const status = kit.runShellCommand(
+     config.compileCommand,
+     projectRoot,
+     "agent 执行语言包编译",
+   );
+   // compile 后修复 idMap.js 中未加引号的中文 key，防止 voerkai18n-loader require 失败
+   if (status === 0) {
+     const fixResult = kit.fixIdMapKeys(projectRoot);
+     if (fixResult.fixed) {
+       console.log("[i18n-agent] fixIdMapKeys: 已修复 idMap.js 未加引号的 key");
+     }
+   }
+   state.results.compile = {
+     ok: status === 0,
+     command: config.compileCommand,
+   };
+   state.results.generated = kit.inspectGeneratedFiles(projectRoot, config);
+   if (!state.results.compile.ok || !state.results.generated.ok) {
+     return { stop: true, ok: false, message: "compile 执行失败或产物缺失" };
+   }
+ }
 
   return null;
 }
