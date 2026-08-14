@@ -1,21 +1,23 @@
 const fs = require("fs");
 const path = require("path");
-const { getPresetById } = require("./presets");
+const { getPresetById, getDefaultPreset } = require("./presets");
 
 /**
- * 按 preset 检查项目 i18n 基建完整性
+ * 检查项目 i18n 基建完整性，未命中 preset 时回退到默认 preset 规则
  * @param {string} projectRoot - 项目根路径
  * @param {object} profile - 项目画像
  * @param {object} config - i18n 配置
  * @returns {object} doctor 报告
  */
 function inspectProjectSetup(projectRoot, profile, config) {
-  const preset = profile.preset ? getPresetById(profile.preset.id) : null;
+  const matchedPreset = profile.preset ? getPresetById(profile.preset.id) : null;
+  const preset = matchedPreset || getDefaultPreset();
   const checks = [];
 
-  if (!preset) {
-    checks.push(createCheck("preset", "warn", "未命中内置 preset，无法执行预设级基建检查"));
-    return buildDoctorReport(projectRoot, profile, checks);
+  if (!matchedPreset) {
+    checks.push(createCheck("preset", "warn", "未命中内置 preset，已回退到默认规则继续检查"));
+  } else {
+    checks.push(createCheck("preset", "pass", `命中 preset: ${matchedPreset.id}`));
   }
 
   checks.push(checkFileExists(projectRoot, config.translationFile, "translation-file", "翻译源文件", {
@@ -40,13 +42,13 @@ function inspectProjectSetup(projectRoot, profile, config) {
       "RTL mixin 设置了 dir",
     ),
   );
-  checks.push(checkFileExists(projectRoot, rtlRules.styleFile, "rtl-style", "RTL 样式文件"));
-  checks.push(checkFileContains(projectRoot, widthRules.file, /getI18nWidth/, "width-adaptation", "宽度适配 helper"));
-  checks.push(
-    checkAcceptLanguage(projectRoot, networkRules),
-  );
-checks.push(checkFileExists(projectRoot, bootstrapRules.componentLocaleFile, "component-locale", "组件库 locale 适配文件"));
- checks.push(checkRouteTitle(projectRoot, routeTitleRules));
+checks.push(checkFileExists(projectRoot, rtlRules.styleFile, "rtl-style", "RTL 样式文件"));
+checks.push(checkFileContains(projectRoot, widthRules.file, /getI18nWidth/, "width-adaptation", "宽度适配 helper"));
+checks.push(
+  checkAcceptLanguage(projectRoot, networkRules),
+);
+checks.push(checkComponentLocale(projectRoot, bootstrapRules));
+checks.push(checkRouteTitle(projectRoot, routeTitleRules));
  checks.push(checkDependencies(projectRoot));
  checks.push(checkScripts(projectRoot));
  checks.push(checkGlobalCli());
@@ -169,15 +171,14 @@ function checkRouteTitle(projectRoot, routeTitleRules) {
     });
   }
 
-  const content = fs.readFileSync(filePath, "utf8");
-  if (
-    routeTitleRules.translateMetaTitle &&
-    /meta\??\.title/.test(content) &&
-    /(this\.)?t\(/.test(content) &&
-    /document\.title/.test(content)
-  ) {
-    return createCheck("route-title", "pass", "检测到路由标题国际化处理");
-  }
+ const content = fs.readFileSync(filePath, "utf8");
+ if (
+   routeTitleRules.translateMetaTitle &&
+    /document\.title/.test(content) &&
+    /\bt\(\s*[^)]*meta\??\.title/.test(content)
+ ) {
+   return createCheck("route-title", "pass", "检测到路由标题国际化处理");
+ }
 
   return createCheck("route-title", "fail", "未检测到明显的路由标题国际化处理", {
     suggestion: "在路由切换处用 t(route.meta.title) 组装 document.title",
@@ -320,7 +321,7 @@ function checkAcceptLanguage(projectRoot, networkRules) {
     const filePath = path.join(projectRoot, networkRules.file);
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath, "utf8");
-      if (/Accept-Language/.test(content)) {
+      if (/Accept-Language/.test(content) && hasI18nScopeRef(content)) {
         return createCheck("accept-language", "pass", "请求头 Accept-Language 映射检查通过");
       }
     }
@@ -331,7 +332,7 @@ function checkAcceptLanguage(projectRoot, networkRules) {
     const files = fs.readdirSync(utilsDir).filter((f) => f.endsWith(".js"));
     for (const file of files) {
       const content = fs.readFileSync(path.join(utilsDir, file), "utf8");
-      if (/Accept-Language/.test(content)) {
+      if (/Accept-Language/.test(content) && hasI18nScopeRef(content)) {
         return createCheck("accept-language", "pass", `请求头 Accept-Language 映射检查通过 (在 ${file} 中检测到)`);
       }
     }
@@ -339,6 +340,41 @@ function checkAcceptLanguage(projectRoot, networkRules) {
   return createCheck("accept-language", "fail", "未检测到 Accept-Language 请求头注入", {
     suggestion: "执行 inject 或手动在请求拦截器中注入 Accept-Language header",
   });
+}
+
+/**
+ * 判断文件内容是否引用了 i18n scope 或语言状态，确认 Accept-Language 来自 i18n 注入而非模板自带
+ * @param {string} content - 文件内容
+ * @returns {boolean} 是否引用了 i18n scope
+ */
+function hasI18nScopeRef(content) {
+  return /@\/languages|i18nScope|activeLanguage|getLanguage|\.language\b/.test(content);
+}
+
+/**
+ * 检查组件库 locale 适配文件是否存在且包含 locale 引入
+ * @param {string} projectRoot - 项目根路径
+ * @param {object} bootstrapRules - 基建规则
+ * @returns {object} 检查结果
+ */
+function checkComponentLocale(projectRoot, bootstrapRules) {
+  const relativePath = bootstrapRules.componentLocaleFile;
+  if (!relativePath) {
+    return createCheck("component-locale", "fail", "未配置组件库 locale 适配文件");
+  }
+  const filePath = path.join(projectRoot, relativePath);
+  if (!fs.existsSync(filePath)) {
+    return createCheck("component-locale", "fail", `缺少组件库 locale 适配文件: ${relativePath}`, {
+      suggestion: `执行 scaffold 或手动创建 ${relativePath}`,
+    });
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  if (!/locale|lang/i.test(content)) {
+    return createCheck("component-locale", "fail", `${relativePath} 存在，但未检测到 locale 引入`, {
+      suggestion: `在 ${relativePath} 中引入 element-ui 和 @kd/components 的 locale 语言包`,
+    });
+  }
+  return createCheck("component-locale", "pass", "组件库 locale 适配文件已包含 locale 引入");
 }
 
 function checkPostcssConfig(projectRoot) {

@@ -36,6 +36,14 @@ function listPresets() {
 }
 
 /**
+ * 获取默认 preset，用于未命中 preset 时回退检查
+ * @returns {object} 默认 preset 对象
+ */
+function getDefaultPreset() {
+  return keendataVue2VoerkaPreset;
+}
+
+/**
  * 检查项目是否匹配指定 preset
  * @param {object} preset - preset 对象
  * @param {object} profile - 项目画像
@@ -64,4 +72,5 @@ module.exports = {
   detectPreset,
   getPresetById,
   listPresets,
+  getDefaultPreset,
 };
