@@ -125,10 +125,16 @@ async function translateTranslations(projectRoot, config, options = {}) {
     );
   }
 
+  const llmTranslatedCount =
+    providerReport && typeof providerReport.translatedCount === "number"
+      ? providerReport.translatedCount
+      : 0;
+
   return {
     ok: strictPlaceholders ? validation.issues.length === 0 : true,
     summary: {
       filledCount: filledItems.length,
+      translatedCount: llmTranslatedCount,
       correctedCount: correctedItems.length,
       translationFile: config.translationFile,
       issueCount: validation.issues.length,
@@ -332,6 +338,23 @@ function applyGlossaryPostProcess(
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 翻译结果报告
  */
+/** LLM 翻译并发批次数，提升大批量翻译速度 */
+const LLM_BATCH_CONCURRENCY = 3;
+
+/**
+ * 使用 LLM (OpenAI 兼容 API) 批量翻译 default.json 中缺失或无效的翻译。
+ *
+ * 设计要点：
+ * - 增量检测：只翻译空翻译和占位式无效翻译，已有有效翻译保持不变
+ * - 并发批次：同时发送多个批次请求（默认 3 个），大幅缩短总耗时
+ * - 逐批写入：每完成一组并发批次就写入文件，中断后重新 run 只丢失当前组
+ * - 幂等恢复：中断后重新 run 时，已写入的翻译会被跳过，不会重复翻译
+ *
+ * @param {string} projectRoot - 项目根路径
+ * @param {object} config - i18n 配置
+ * @param {object} options - 选项 { force: boolean }
+ * @returns {object} 翻译结果报告
+ */
 async function runLlmTranslate(projectRoot, config, options = {}) {
   const apiKey = process.env["LLM_API_KEY"];
   if (!apiKey) {
@@ -360,7 +383,7 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     (preset && preset.rules.translation && preset.rules.translation.glossary) ||
     {};
 
-  // force 模式：清空所有非 glossary 翻译，强制重新翻译
+  // force 模式：清空所有翻译，强制重新翻译
   if (options.force) {
     Object.entries(translations).forEach(([, item]) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return;
@@ -389,52 +412,68 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   });
 
   if (missingEntries.length === 0) {
-    return { ok: true, used: "llm", executed: true, message: "无缺失翻译" };
+    return { ok: true, used: "llm", executed: true, translatedCount: 0, message: "无缺失翻译" };
   }
 
   const batchSize = 50;
   const sourceTexts = [...new Set(missingEntries.map((e) => e.sourceText))];
-  let translatedCount = 0;
   const totalBatches = Math.ceil(sourceTexts.length / batchSize);
+  let translatedCount = 0;
+  let completedBatches = 0;
 
-  for (let i = 0; i < sourceTexts.length; i += batchSize) {
-    const batchNum = Math.floor(i / batchSize) + 1;
+  // 按并发数分组处理批次，每组完成后写入文件
+  for (let gi = 0; gi < totalBatches; gi += LLM_BATCH_CONCURRENCY) {
+    const groupEnd = Math.min(gi + LLM_BATCH_CONCURRENCY, totalBatches);
+
     console.log(
-      `[i18n-kit] LLM 翻译进度: 批次 ${batchNum}/${totalBatches} (${sourceTexts.length} 条待翻译)`,
+      `[i18n-kit] LLM 翻译进度: 批次 ${gi + 1}-${groupEnd}/${totalBatches} (${sourceTexts.length} 条待翻译)`,
     );
-    const batch = sourceTexts.slice(i, i + batchSize);
-    try {
-      const results = await callLlmTranslate(
-        batch,
-        targetLanguages,
-        glossary,
-        apiKey,
-        baseUrl,
-        model,
+
+    // 并发发送当前组的所有批次
+    const batchPromises = [];
+    for (let bi = gi; bi < groupEnd; bi += 1) {
+      const start = bi * batchSize;
+      const batch = sourceTexts.slice(start, start + batchSize);
+      batchPromises.push(
+        callLlmTranslate(batch, targetLanguages, glossary, apiKey, baseUrl, model)
+          .then((results) => ({ results, batchNum: bi + 1, ok: true }))
+          .catch((error) => {
+            console.warn(`[i18n-kit] LLM 翻译批次 ${bi + 1} 失败: ${error.message}`);
+            return { results: [], batchNum: bi + 1, ok: false };
+          }),
       );
+    }
+
+    const settled = await Promise.all(batchPromises);
+
+    // 同步应用翻译结果到 translations 对象
+    let groupTranslated = 0;
+    settled.forEach(({ results }) => {
       results.forEach((result) => {
         const item = translations[result.source];
         if (!item || typeof item !== "object") return;
         targetLanguages.forEach((lang) => {
           if (result[lang] && typeof result[lang] === "string") {
             item[lang] = result[lang];
+            groupTranslated += 1;
             translatedCount += 1;
           }
         });
       });
-    } catch (error) {
-      console.warn(
-        `[i18n-kit] LLM 翻译批次 ${i / batchSize + 1} 失败: ${error.message}`,
+      completedBatches += 1;
+    });
+
+    // 每组完成后立即写入文件，中断后只丢失当前组
+    if (groupTranslated > 0) {
+      fs.writeFileSync(
+        translationPath,
+        JSON.stringify(translations, null, 2) + "\n",
+        "utf8",
+      );
+      console.log(
+        `[i18n-kit] LLM 翻译: 已保存 ${translatedCount}/${missingEntries.length} 条翻译 (${completedBatches}/${totalBatches} 批次完成)`,
       );
     }
-  }
-
-  if (translatedCount > 0) {
-    fs.writeFileSync(
-      translationPath,
-      JSON.stringify(translations, null, 2) + "\n",
-      "utf8",
-    );
   }
 
   return {
@@ -443,7 +482,7 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     executed: true,
     translatedCount,
     remainingCount: missingEntries.length - translatedCount,
-    message: `LLM 翻译完成: ${translatedCount} 条已翻译, ${missingEntries.length - translatedCount} 条未翻译`,
+    message: `LLM 翻译完成: ${translatedCount}/${missingEntries.length} 条已翻译`,
   };
 }
 

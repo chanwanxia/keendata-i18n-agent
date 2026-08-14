@@ -97,7 +97,7 @@ function createTools(projectRoot, config) {
     {
     name: "scaffold",
     description:
-        "写入 i18n 基础设施文件（languages 目录、mixin、样式等）。返回创建和跳过的文件数。force=true 时覆盖已存在的文件（用于修复内容不完整的情况）。",
+        "写入 i18n 基础设施文件（languages 目录、mixin、样式等）。返回创建和跳过的文件数。force=true 时覆盖已存在的文件（用于修复内容不完整的情况）。注意：default.json 包含提取的翻译数据，即使 force=true 也不会被覆盖。",
       parameters: {
         type: "object",
         properties: {
@@ -168,7 +168,7 @@ function createTools(projectRoot, config) {
    {
     name: "apply_i18n",
     description:
-        "对目标项目执行 i18n 自动改写：中文文案包裹为 t()、.meta.title 包裹、el-form label-width 转为 auto、isRtl 内联样式转换。即使 scan 结果为 0 也必须执行（label-width 和 isRtl 转换不依赖中文扫描）。基于 AST 操作，安全可靠。写入后自动执行 eslint --fix。dryRun=true 时仅预览。幂等：重复执行不产生重复包裹或转换。",
+        "对目标项目执行 i18n 自动改写：中文文案包裹为 t()、.meta.title 包裹、el-form label-width 转为 auto、isRtl 内联样式转换。正式执行前自动清理历史遗留问题（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用）。即使 scan 结果为 0 也必须执行（label-width 和 isRtl 转换不依赖中文扫描）。基于 AST 操作，安全可靠。写入后自动执行 eslint --fix。dryRun=true 时仅预览不清理。幂等：重复执行不产生重复包裹或转换。",
     parameters: {
         type: "object",
         properties: {

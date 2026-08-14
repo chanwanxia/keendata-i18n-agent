@@ -33,18 +33,17 @@ function buildSystemPrompt(projectRoot, config) {
 ## 工作流程
 
 推荐流程（但你可以根据实际情况自主调整顺序和重试）：
-1. cleanup_i18n — 清理之前 run 可能遗留的问题（嵌套 t()、重复 import、格式问题），保证幂等性
-2. scaffold — 写入 i18n 基础设施文件
-3. inject — 注入 i18n 代码到 main.js / vue.config.js / App.vue（注入后自动 eslint --fix）
-4. doctor — 检查基建完整性
-5. scan — 扫描未国际化中文
-6. apply — 自动改写可安全处理的中文文案（先用 dryRun 预览，再正式执行；写入后自动 eslint --fix）
-   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。
-7. extract — 提取词条到翻译源文件
-8. translate — 补齐缺失翻译（推荐使用 llm provider 获得最佳翻译质量）
-9. validate — 校验翻译
-10. compile — 编译语言包
-11. check_generated_files — 验证产物
+1. scaffold — 写入 i18n 基础设施文件（default.json 含翻译数据，force=true 也不覆盖）
+2. inject — 注入 i18n 代码到 main.js / vue.config.js / App.vue（注入后自动 eslint --fix）
+3. doctor — 检查基建完整性
+4. scan — 扫描未国际化中文
+5. apply — 自动改写可安全处理的中文文案（先用 dryRun 预览，再正式执行；写入后自动 eslint --fix）
+   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。**apply 正式执行时会自动清理历史遗留问题**（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用），无需单独调用 cleanup_i18n。
+6. extract — 提取词条到翻译源文件
+7. translate — 补齐缺失翻译（推荐使用 llm provider 获得最佳翻译质量）
+8. validate — 校验翻译
+9. compile — 编译语言包
+10. check_generated_files — 验证产物
 
 ## 幂等性与重复运行
 
@@ -82,6 +81,7 @@ translate 之后必须执行 validate，并检查结果：
 
 - apply 工具基于 AST 自动改写，能安全处理大部分中文文案包裹
 - 如果 apply 覆盖不到某些中文（如特殊组件属性、动态拼接的文案），可以用 read_file 读取文件内容，理解上下文后用 write_file 手动修改
+- **禁止用 write_file 重写 scaffold 生成的基础设施文件**（src/languages/、src/utils/elementui-utils.js、src/mixins/i18n-width-mixin.js、postcss.config.js 等）。这些文件由 scaffold 工具按金标模板生成，手动重写会导致 API 不兼容和运行时错误。如果 doctor 报告这些文件有问题，用 scaffold（force=true）重新生成，不要手动修改。
 - 手动修改时，将中文文案包裹为 t("中文") 调用，确保 voerkai18n 能提取
 
 ## 约束

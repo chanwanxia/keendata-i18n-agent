@@ -5,7 +5,7 @@ const AGENT_CONFIG_FILE = "i18n-agent.config.json";
 
 const DEFAULT_AGENT_CONFIG = {
   decisionMode: "llm",
-  maxSteps: 50,
+  maxSteps: 0,
   autoInitConfig: true,
   autoCreateTranslationFile: true,
   autoScaffold: true,

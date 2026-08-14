@@ -10,7 +10,8 @@ const TEMPLATE_FILES = [
   { template: "languages/index.js", target: "src/languages/index.js", transform: true },
   { template: "languages/storage.js", target: "src/languages/storage.js" },
   { template: "languages/settings.json", target: "src/languages/settings.json" },
-  { template: "languages/translates/default.json", target: "src/languages/translates/default.json" },
+  { template: "languages/translates/default.json", target: "src/languages/translates/default.json", noOverwrite: true },
+  // noOverwrite: true 表示即使 force=true 也不覆盖（保护用户数据和提取结果）
   { template: "languages/i18n-plugin/i18nMixin.js", target: "src/languages/i18n-plugin/i18nMixin.js" },
   { template: "languages/formatters/zh.js", target: "src/languages/formatters/zh.js" },
   { template: "languages/formatters/en.js", target: "src/languages/formatters/en.js" },
@@ -38,6 +39,12 @@ function scaffold(projectRoot, profile, config, options = {}) {
     const targetPath = path.join(projectRoot, entry.target);
 
     if (fs.existsSync(targetPath) && !options.force) {
+      skipped.push(entry.target);
+      return;
+    }
+    // noOverwrite 标记的文件（如 default.json）即使 force=true 也不覆盖，
+    // 因为它们包含提取的翻译数据，覆盖会清空已有翻译
+    if (fs.existsSync(targetPath) && entry.noOverwrite) {
       skipped.push(entry.target);
       return;
     }

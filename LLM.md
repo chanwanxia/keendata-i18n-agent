@@ -88,7 +88,7 @@ API Key 支持三种方式提供，按优先级依次尝试：
 - 约束：只修改项目内文件，不碰 node_modules/dist/.git；保持代码功能不变；翻译时保持 `{}` 占位符和 `${}` 系统变量不变
 - 语言列表和 preset 信息从 config 注入
 
-**`src/agent/loop.js`** — 导出 `runAgentLoop(client, systemPrompt, tools, maxSteps)` 函数。核心逻辑：
+**`src/agent/loop.js`** — 导出 `runAgentLoop(client, model, systemPrompt, tools, options)` 函数。核心逻辑（已简化，实际还包含断点续传、上下文裁剪、循环检测、友好日志）：
 
 ```js
 const messages = [
@@ -174,7 +174,7 @@ return { ok: false, message: "超过最大步数", stepCount: maxSteps, timeline
 ### 4. 改造 `src/config.js`
 
 - `DEFAULT_AGENT_CONFIG.decisionMode` 默认值从 `"rule"` 改为 `"llm"`
-- `DEFAULT_AGENT_CONFIG.maxSteps` 从 `20` 改为 `50`（tool-calling 需要更多步数）
+- `DEFAULT_AGENT_CONFIG.maxSteps` 默认为 `0`（自动模式），不设固定步数上限，持续执行直到完成。安全机制：安全上限 2000 步 + 循环检测（连续 5 次相同调用）+ 上下文裁剪（第 15 步起每 10 步截断旧 tool 结果）
 - `DEFAULT_AGENT_CONFIG.llm` 字段更新：
     - `apiKeyEnv` 改为 `"LLM_API_KEY"`
     - `baseUrlEnv` 改为 `"LLM_BASE_URL"`
@@ -202,6 +202,7 @@ return { ok: false, message: "超过最大步数", stepCount: maxSteps, timeline
 - 新增 `--reset-key` 参数：清除保存的 LLM API Key，下次运行重新输入
 - help 文本更新：`--decision-mode` 说明改为"rule = 旧规则引擎（回退），llm = LLM 驱动（默认）"
 - 新增 `--max-tool-calls N` 参数（别名映射到 maxSteps）
+- 新增 `--no-resume` 参数：不从 checkpoint 恢复，从头开始执行（自动清除旧 checkpoint）
 - flag 解析修复：kebab-case 转 camelCase，数值型 flag 正确解析
 - 独立 CLI 命令（scan、apply、translate 等）不受影响
 

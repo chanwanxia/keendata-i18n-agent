@@ -97,6 +97,7 @@ function parseArgs(argv) {
       flags.autoCreateTranslationFile = false;
     if (item === "--no-auto-scaffold") flags.autoScaffold = false;
     if (item === "--no-auto-inject") flags.autoInject = false;
+    if (item === "--no-resume") flags.resume = false;
     if (item === "--reset-key") flags.resetKey = true;
     if (item === "--force") flags.force = true;
 
@@ -164,10 +165,6 @@ function printResult(result) {
   console.log(`[i18n-agent] 步骤数: ${result.stepCount}`);
   console.log(`[i18n-agent] 结果: ${result.ok ? "成功" : "失败"}`);
   console.log(`[i18n-agent] 说明: ${result.message}`);
-  console.log("[i18n-agent] 执行轨迹:");
-  result.timeline.forEach((item) => {
-    console.log(`  - [${item.step}] ${item.action}: ${item.reason}`);
-  });
 }
 
 /**
@@ -178,46 +175,48 @@ function printHelp() {
 @kd/i18n
 
 用法:
-  npx @kd/i18n run [flags]
-  npx @kd/i18n audit [flags]
+  kd-i18n run [flags]
+  kd-i18n audit [flags]
 
 命令:
-  run        执行 i18n agent 全流程（scaffold → inject → scan → apply → extract → translate → compile）
+  run        执行 i18n agent 全流程（cleanup → scaffold → inject → doctor → scan → apply → extract → translate → validate → compile）
   audit      审计项目国际化合规性
   scaffold   写入 i18n 基础设施文件（languages 目录、mixin、样式等）
   inject     向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码
   scan       扫描疑似未国际化中文
-  apply      自动改写可安全处理的文案（--dry-run 预览）
+  apply      自动改写可安全处理的文案（--dry-run 预览不写入）
   doctor     按 preset 检查 i18n 基建
   translate  自动补齐 default.json 中缺失的翻译
   validate   校验翻译完整性与正确性
   extract    执行词条提取命令
   compile    执行语言包编译命令
   profile    探测目标项目的 i18n 接入画像
-  init       输出或写入配置模板
+  init       输出或写入配置模板（--write-config 写入）
 
 常用参数:
   --project PATH                        指定目标项目路径（默认当前目录）
   --json                                输出 JSON，便于 CI 或外层 agent 解析
+  --dry-run                             apply 模式仅预览不写入文件
   --provider NAME                       翻译 provider，可选 llm / glossary / baidu / command
   --appid-env ENV                       百度翻译 appid 的环境变量名
   --appkey-env ENV                      百度翻译 appkey 的环境变量名
   --decision-mode MODE                  决策模式，可选 llm（默认，LLM 驱动）/ rule（旧规则引擎回退）
-  --max-steps N                         最大决策步数
- --max-tool-calls N                    最大工具调用次数（--max-steps 的别名）
+  --max-steps N                         最大决策步数（0=自动模式，不限步数直到完成，默认）
+  --no-resume                           不从 checkpoint 恢复，从头开始执行（自动清除旧 checkpoint）
+  --max-tool-calls N                    最大工具调用次数（--max-steps 的别名）
   --force                               强制清空所有翻译重新翻译（用于修复占位式无效翻译）
   --reset-key                           清除保存的 LLM API Key，下次运行重新输入
- --no-auto-init-config                 禁止自动写入 i18n-kit.config.json
+  --no-auto-init-config                 禁止自动写入 i18n-kit.config.json
   --no-auto-create-translation-file     禁止自动创建翻译源文件
   --no-auto-scaffold                    禁止自动 scaffold 基础设施文件
   --no-auto-inject                      禁止自动注入 main.js / vue.config.js / App.vue
 
 示例:
-  npx @kd/i18n run
-  npx @kd/i18n run --project /path/to/repo
-  LLM_API_KEY=xxx npx @kd/i18n run --project /path/to/repo
-  npx @kd/i18n run --decision-mode rule --project /path/to/repo
-  npx @kd/i18n audit --project /path/to/repo --json
+  kd-i18n run
+  kd-i18n run --no-resume
+  LLM_API_KEY=xxx kd-i18n run
+  kd-i18n audit
+  kd-i18n audit --json
 `);
 }
 

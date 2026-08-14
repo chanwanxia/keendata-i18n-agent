@@ -523,3 +523,194 @@ test("绑定属性中比较运算符 > 不被误识别为文本节点边界", ()
     `标签结构应保持完整，实际: ${result}`,
   );
 });
+
+test("beforeRouteEnter 中使用 t() 而非 this.t()，并注入 import", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<script>
+export default {
+  beforeRouteEnter(to, from, next) {
+    if (to.query.id) {
+      to.meta.title = "编辑数据源";
+    } else {
+      to.meta.title = "新建数据源";
+    }
+    next();
+  },
+};
+</script>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('t("编辑数据源")'), "beforeRouteEnter 中应使用 t() 而非 this.t()");
+  assert.ok(result.includes('t("新建数据源")'), "beforeRouteEnter 中应使用 t()");
+  assert.ok(!result.includes("this.t("), "不应出现 this.t()");
+  assert.ok(
+    result.includes('import { t } from "@/languages"'),
+    "应注入 import { t }",
+  );
+});
+
+test("props default 中使用 t() 而非 this.t()，并注入 import", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<script>
+export default {
+  props: {
+    title: {
+      type: String,
+      default: "用户",
+    },
+  },
+};
+</script>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('t("用户")'), "props default 中应使用 t()");
+  assert.ok(!result.includes("this.t("), "不应出现 this.t()");
+  assert.ok(
+    result.includes('import { t } from "@/languages"'),
+    "应注入 import { t }",
+  );
+});
+
+test("普通 methods 中仍使用 this.t()", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<script>
+export default {
+  methods: {
+    showMessage() {
+      return "操作成功";
+    },
+  },
+};
+</script>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.t("), "普通 methods 中应使用 this.t()");
+  assert.ok(!result.includes('import { t }'), "普通 methods 不应注入 import");
+});
+
+// ============ isRtl 内联样式转换测试 ============
+
+test(":style 对象语法的方向性属性转换为 isRtl 条件表达式", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :style="{ 'padding-right': '32px' }">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("isRtl ?"), "应生成 isRtl 条件表达式");
+  assert.ok(result.includes("'padding-left'"), "RTL 分支应使用 padding-left");
+  assert.ok(result.includes("'padding-right'"), "LTR 分支应保留 padding-right");
+});
+
+test("静态 style 属性的方向性 CSS 转换为 :style isRtl 条件表达式", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div style="padding-right: 32px;">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes(":style="), "应转换为 :style 绑定");
+  assert.ok(result.includes("isRtl ?"), "应生成 isRtl 条件表达式");
+  assert.ok(result.includes("'padding-left'"), "RTL 分支应使用 padding-left");
+  assert.ok(!result.includes('style="padding-right'), "不应保留原静态 style");
+});
+
+test(":style 值中包含嵌套大括号时正确转换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :style="{ 'padding-right': getStyle({ active: true }) }">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("isRtl ?"), "应生成 isRtl 条件表达式");
+  assert.ok(result.includes("getStyle({ active: true })"), "应保留完整的函数调用");
+});
+
+test("v-bind:style 的方向性属性转换为 isRtl 条件表达式", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div v-bind:style="{ 'margin-left': '10px' }">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("v-bind:style="), "应保留 v-bind:style 前缀");
+  assert.ok(result.includes("isRtl ?"), "应生成 isRtl 条件表达式");
+  assert.ok(result.includes("'margin-right'"), "RTL 分支应使用 margin-right");
+});
+
+test("静态 style 多个方向性属性同时转换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div style="padding-right: 32px; margin-left: 10px;">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("isRtl ?"), "应生成 isRtl 条件表达式");
+  assert.ok(result.includes("'padding-left'"), "padding-right 应映射为 padding-left");
+  assert.ok(result.includes("'margin-right'"), "margin-left 应映射为 margin-right");
+});
+
+test("静态 style 混合方向性和非方向性属性", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div style="padding-right: 32px; color: red;">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("isRtl ?"), "应生成 isRtl 条件表达式");
+  assert.ok(result.includes("'padding-left'"), "方向性属性应转换");
+  assert.ok(result.includes("'color': 'red'"), "非方向性属性应保留在两个分支中");
+});
+
+test("非方向性静态 style 不被转换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div style="color: red; font-size: 14px;">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes("isRtl"), "非方向性 style 不应转换");
+  assert.ok(result.includes('style="color: red'), "应保留原静态 style");
+});
+
+test(":style left 属性转换为 right", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :style="{ 'left': '10px' }">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("'right'"), "left 应映射为 right");
+  assert.ok(result.includes("'left'"), "LTR 分支应保留 left");
+});
+
+test("多行 :style 对象正确转换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :style="{
+  'padding-right': '32px',
+  color: 'red'
+}">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("isRtl ?"), "多行 :style 应正确转换");
+  assert.ok(result.includes("'padding-left'"), "应映射为 padding-left");
+});
+
+test("已转换的 isRtl 样式不会被重复转换（幂等性）", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div :style="isRtl ? { 'padding-left': '32px' } : { 'padding-right': '32px' }">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes("isRtl ? isRtl"), "不应产生嵌套 isRtl 条件");
+});
+
+test("静态 style 的 left 属性转换为 right", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div style="left: 10px;">test</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes(":style="), "应转换为 :style 绑定");
+  assert.ok(result.includes("'right'"), "left 应映射为 right");
+  assert.ok(result.includes("'left'"), "LTR 分支应保留 left");
+});

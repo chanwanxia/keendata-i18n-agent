@@ -42,7 +42,7 @@ test("无 tool_calls 时立即终止并返回 ok", async () => {
     "test-model",
     "system prompt",
     [],
-    10,
+    { maxSteps: 10 },
   );
 
   assert.strictEqual(result.ok, true);
@@ -99,7 +99,7 @@ test("执行 tool call 后终止", async () => {
     "test-model",
     "system prompt",
     tools,
-    10,
+    { maxSteps: 10 },
   );
 
   assert.strictEqual(result.ok, true);
@@ -158,7 +158,7 @@ test("工具执行出错时返回 error 而非抛异常", async () => {
     "test-model",
     "system prompt",
     tools,
-    10,
+    { maxSteps: 10 },
   );
 
   assert.strictEqual(result.ok, true);
@@ -202,7 +202,7 @@ test("超过最大步数时返回失败", async () => {
     "test-model",
     "system prompt",
     tools,
-    3,
+    { maxSteps: 3 },
   );
 
   assert.strictEqual(result.ok, false);
@@ -251,7 +251,7 @@ test("未知工具返回 error", async () => {
     "test-model",
     "system prompt",
     tools,
-    10,
+    { maxSteps: 10 },
   );
 
   assert.strictEqual(result.ok, true);
@@ -313,7 +313,7 @@ test("多个 tool_calls 在同一轮执行", async () => {
     "test-model",
     "system prompt",
     tools,
-    10,
+    { maxSteps: 10 },
   );
 
   assert.strictEqual(result.timeline.length, 2);

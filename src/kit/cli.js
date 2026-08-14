@@ -654,7 +654,7 @@ function printHelp() {
 @kd/i18n
 
 用法:
-  npx @kd/i18n <command> --project /absolute/path/to/repo [flags]
+  kd-i18n <command> --project /absolute/path/to/repo [flags]
 
 命令:
   init       输出配置模板，或通过 --write-config 写入目标项目
@@ -691,12 +691,12 @@ function printHelp() {
   --fail-on-scan  run 模式发现疑似未国际化文案时直接失败
 
 示例:
-  npx @kd/i18n profile --project /path/to/repo
-  npx @kd/i18n doctor --project /path/to/repo
-  npx @kd/i18n rules --project /path/to/repo --json
-  npx @kd/i18n apply --project /path/to/repo --dry-run
-  BAIDU_APPID=xxx BAIDU_APPKEY=xxx npx @kd/i18n translate --project /path/to/repo --provider baidu
-  npx @kd/i18n run --project /path/to/repo
+  kd-i18n profile --project /path/to/repo
+  kd-i18n doctor --project /path/to/repo
+  kd-i18n rules --project /path/to/repo --json
+  kd-i18n apply --project /path/to/repo --dry-run
+  BAIDU_APPID=xxx BAIDU_APPKEY=xxx kd-i18n translate --project /path/to/repo --provider baidu
+  kd-i18n run --project /path/to/repo
 `);
 }
 

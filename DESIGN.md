@@ -2,7 +2,7 @@
 
 ## 概述
 
-将 `keendata-i18n-kit` 和 `@kd/i18n` 合并为单一 npm 包 `@kd/i18n`，以 gaea-fe-new 为唯一金标，实现 `npx @kd/i18n` 一键完成同框架 KeenData Vue2 项目的全部国际化工作。
+将 `keendata-i18n-kit` 和 `@kd/i18n` 合并为单一 npm 包 `@kd/i18n`，以 gaea-fe-new 为唯一金标，实现 `kd-i18n` 一键完成同框架 KeenData Vue2 项目的全部国际化工作。
 
 ### voerkai18n 命令职责边界
 
@@ -398,9 +398,9 @@ apply 模块自动转换：
 
 ### 环境变量
 
-- `OPENAI_API_KEY`（必需，否则回退 glossary）
-- `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）
-- `OPENAI_MODEL`（默认 `gpt-5.5`）
+- `LLM_API_KEY`（必需，否则回退 glossary）
+- `LLM_BASE_URL`（默认 `https://api.openai.com/v1`）
+- `LLM_MODEL`（默认 `gpt-5.5`）
 
 ### API 调用
 
@@ -413,7 +413,7 @@ apply 模块自动转换：
 ### 失败处理
 
 - 单批失败时标记为未翻译，不中断整体流程
-- `OPENAI_API_KEY` 未设置时回退到 glossary 模式并警告
+- `LLM_API_KEY` 未设置时回退到 glossary 模式并警告
 - `buildFallbackTranslation` 改为返回空字符串（让缺失能被 validate 检测到）
 
 ### 增量翻译策略
@@ -468,7 +468,7 @@ init_config → create_translation_file → scaffold → inject → check_cli �
 
 ### maxSteps
 
-从 12 提升到 20。
+默认为 `0`（自动模式），不设固定步数上限，agent 持续执行直到完成。安全机制：安全上限 2000 步、连续 5 次相同调用循环检测、上下文裁剪（第 15 步起每 10 步截断旧 tool 结果）。日志中显示预估值（基础 20 + 每 5 个源码文件 1 步）供进度参考。可通过 `--max-steps N` 设定硬性上限。
 
 ### doctor fail 项处理
 
@@ -491,7 +491,16 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 
 - `--no-auto-scaffold`（默认 true）
 - `--no-auto-inject`（默认 true）
+- `--no-resume` — 不从 checkpoint 恢复，从头开始执行（自动清除旧 checkpoint）
 - `--project` 可选，默认 `process.cwd()`
+
+### 断点续传
+
+每步执行后自动保存 checkpoint 到 `~/.kd-i18n/checkpoints/`（按项目路径 hash 命名），不污染目标项目。中断后重新 `kd-i18n run` 从上次中断处继续。任务完成后 checkpoint 自动清除。`--no-resume` 可跳过恢复并清除旧 checkpoint。
+
+### 上下文裁剪
+
+从第 15 步起每 10 步自动截断较早的 tool 结果为摘要（保留最近 8 步完整内容），防止 LLM 对话过长导致后期调用速度退化。
 
 ---
 
@@ -580,7 +589,7 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 - 验证翻译结果正确回填 `default.json`
 - 验证 glossary 后处理
 - 验证占位符校验
-- 验证 `OPENAI_API_KEY` 未设置时回退 glossary
+- 验证 `LLM_API_KEY` 未设置时回退 glossary
 
 **`scan.test.js`**：
 - 已包裹 `t("中文")` 的中文被跳过
@@ -599,20 +608,23 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 ## 十一、CLI 命令总览
 
 ```bash
-# 一键执行全流程
-npx @kd/i18n run --project /path/to/repo
+# 一键执行全流程（默认当前目录）
+kd-i18n run
+
+# 指定目标项目路径
+kd-i18n run --project /path/to/repo
 
 # 使用 LLM 翻译
-OPENAI_API_KEY=xxx npx @kd/i18n run --project /path/to/repo
+LLM_API_KEY=xxx kd-i18n run
 
-# 在当前目录执行
-npx @kd/i18n run
+# 从头开始执行（清除 checkpoint）
+kd-i18n run --no-resume
 
 # 审计项目国际化合规性
-npx @kd/i18n audit --project /path/to/repo
+kd-i18n audit
 
 # JSON 输出（用于 CI）
-npx @kd/i18n run --project /path/to/repo --json
+kd-i18n run --json
 ```
 
 ---
@@ -623,8 +635,8 @@ npx @kd/i18n run --project /path/to/repo --json
 - `@voerkai18n/cli` 全局安装版本必须为 `2.1.13`（v3 不兼容）
 - package.json 依赖注入后需用户手动执行 `pnpm install`（agent 不自动执行）
 - 全局 CLI 需用户手动安装：`pnpm add -g @voerkai18n/cli@2.1.13`
-- LLM 翻译默认 `gpt-5.5`，可通过 `OPENAI_MODEL` 覆盖
-- `OPENAI_API_KEY` 未设置时 translate 回退 glossary 并警告
+- LLM 翻译默认 `gpt-5.5`，可通过 `LLM_MODEL` 覆盖
+- `LLM_API_KEY` 未设置时 translate 回退 glossary 并警告
 - 代码修改后执行 `pnpm lint fix`
 - 新增方法必须补充功能注释
 - `@kd/components` 版本必须 `>= 5.0.0`，否则 elementui-utils.js 中的 KD 组件 locale 文件不可用（inject 输出 fail，agent 提示用户手动升级）

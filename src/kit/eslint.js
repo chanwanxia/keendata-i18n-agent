@@ -97,7 +97,10 @@ function runEslintFix(projectRoot, relativeFiles) {
     .join(" ");
 
   // 使用 --fix 自动修复，--no-error-on-unmatched-pattern 避免文件不匹配时报错
-  const command = `npx eslint --fix --no-error-on-unmatched-pattern ${fileList}`;
+  // --fix-only 仅修复可自动修复的问题
+  // --rule 'prettier/prettier: off' 禁用 prettier 格式化，避免清除项目原有注释和格式
+  // --rule 'no-console: off' 不修改项目原有的 console 语句
+  const command = `npx eslint --fix --no-error-on-unmatched-pattern --rule 'prettier/prettier: off' --rule 'no-console: off' ${fileList}`;
   const result = runShellCommandCaptured(
     command,
     projectRoot,

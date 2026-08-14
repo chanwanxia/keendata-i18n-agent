@@ -82,3 +82,87 @@ test("vue.config.js 已有 loader 不重复注入", () => {
 
   assert.strictEqual(result.updated, false);
 });
+
+test("vue.config.js force 重新注入不产生残留", () => {
+  // 模拟真实项目结构：configureWebpack 中已有其他 rules
+  const projectRoot = createTempProject({
+    "vue.config.js": `const { defineConfig } = require("@vue/cli-service");
+const path = require("path");
+
+module.exports = defineConfig({
+  configureWebpack: {
+    module: {
+      rules: [
+        {
+          test: /\\.css$/,
+          use: ["css-loader"],
+        },
+      ],
+    },
+    plugins: [],
+  },
+});
+`,
+  });
+
+  const { injectVueConfig } = require("../src/kit/inject");
+
+  // 第一次注入
+  const result1 = injectVueConfig(projectRoot, {});
+  assert.strictEqual(result1.updated, true);
+  const content1 = fs.readFileSync(path.join(projectRoot, "vue.config.js"), "utf8");
+  assert.ok(content1.includes("voerkai18n-loader"), "第一次注入后应包含 voerkai18n-loader");
+
+  // 统计 voerkai18n-loader 出现次数（应该只有 1 次）
+  const count1 = (content1.match(/voerkai18n-loader/g) || []).length;
+  assert.strictEqual(count1, 1, `第一次注入后应只有 1 个 voerkai18n-loader，实际 ${count1}`);
+
+  // force 重新注入
+  const result2 = injectVueConfig(projectRoot, { force: true });
+  assert.strictEqual(result2.updated, true);
+  const content2 = fs.readFileSync(path.join(projectRoot, "vue.config.js"), "utf8");
+  assert.ok(content2.includes("voerkai18n-loader"), "force 重新注入后应包含 voerkai18n-loader");
+
+  // 统计 voerkai18n-loader 出现次数（应该仍然只有 1 次，无残留）
+  const count2 = (content2.match(/voerkai18n-loader/g) || []).length;
+  assert.strictEqual(count2, 1, `force 重新注入后应只有 1 个 voerkai18n-loader，实际 ${count2}`);
+
+  // 确保原有规则不被破坏
+  assert.ok(content2.includes("css-loader"), "原有 css-loader 规则应保留");
+
+  // 确保语法有效：尝试 require 解析
+  assert.doesNotThrow(() => {
+    // vue.config.js 使用 defineConfig，直接检查语法平衡
+    const openBraces = (content2.match(/{/g) || []).length;
+    const closeBraces = (content2.match(/}/g) || []).length;
+    assert.strictEqual(openBraces, closeBraces, "大括号应平衡");
+  }, "vue.config.js 语法检查失败");
+});
+
+test("vue.config.js 多次 force 注入保持干净", () => {
+  const projectRoot = createTempProject({
+    "vue.config.js": `module.exports = {
+  configureWebpack: {
+    module: {
+      rules: [],
+    },
+  },
+};
+`,
+  });
+
+  const { injectVueConfig } = require("../src/kit/inject");
+
+  // 连续 3 次 force 注入
+  for (let i = 0; i < 3; i++) {
+    injectVueConfig(projectRoot, { force: true });
+  }
+
+  const content = fs.readFileSync(path.join(projectRoot, "vue.config.js"), "utf8");
+  const count = (content.match(/voerkai18n-loader/g) || []).length;
+  assert.strictEqual(count, 1, `3 次 force 注入后应只有 1 个 voerkai18n-loader，实际 ${count}`);
+
+  const openBraces = (content.match(/{/g) || []).length;
+  const closeBraces = (content.match(/}/g) || []).length;
+  assert.strictEqual(openBraces, closeBraces, "大括号应平衡");
+});

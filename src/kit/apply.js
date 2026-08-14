@@ -44,6 +44,13 @@ const JS_PARSE_PLUGINS = [
  */
 function applyI18n(projectRoot, config, options = {}) {
   const preset = config.preset ? getPresetById(config.preset) : null;
+
+  // 正式执行前先清理之前 run 可能遗留的问题（嵌套 t()、重复 import、
+  // beforeRouteEnter/props 中的 this.t 误用等），保证幂等性
+  if (!options.dryRun) {
+    cleanupI18n(projectRoot, config);
+  }
+
   const files = collectTargetFiles(projectRoot, config);
   const changedFiles = [];
 
@@ -386,6 +393,13 @@ function transformTemplate(source, preset, config) {
     replacements += rtlStyleResult.replacements;
     code = rtlStyleResult.code;
   }
+  // isRtl 静态样式自动转换
+  // 检测静态 style 中的方向性属性（padding-left/right, margin-left/right 等），转换为 :style isRtl 条件表达式
+  const rtlStaticResult = transformRtlStaticStyles(code);
+  if (rtlStaticResult.changed) {
+    replacements += rtlStaticResult.replacements;
+    code = rtlStaticResult.code;
+  }
 
   // el-form label-width 自动适配：将固定 px 值改为 auto，让 Element UI 根据内容自动计算宽度
   // 保留 label-width="0" 和 label-width="0px"（特殊布局用途）
@@ -479,36 +493,127 @@ function transformRtlInlineStyles(code) {
   let replacements = 0;
   let result = code;
 
-  // 匹配 :style="{ ... }" 对象语法（含单引号和双引号两种属性名写法）
-  // 注意：属性值中的双引号需要特殊处理，:style 用双引号包裹时内部用单引号
-  result = result.replace(
-    /:style="(\{[^}]+\})"/g,
-    (match, styleObj) => {
-      // 检测是否已包含 isRtl（幂等性）
-      if (styleObj.includes("isRtl")) return match;
+  // 匹配 :style="{ ... }" 或 v-bind:style="{ ... }" 对象语法
+  // 要求前缀必须是 : 或 v-bind:（不匹配纯 style="..."，那由 transformRtlStaticStyles 处理）
+  // 使用大括号匹配算法提取完整对象内容，支持值中包含嵌套大括号
+  const styleAttrPattern = /(?:v-bind:|:)style="(?=\{)/g;
+  let match;
+  while ((match = styleAttrPattern.exec(result)) !== null) {
+    const attrStart = match.index;
+    const braceStart = match.index + match[0].length;
+    const extracted = extractBracedObject(result, braceStart);
+    if (!extracted) continue;
 
-      // 解析对象中的属性
-      const props = parseStyleObject(styleObj);
-      if (!props) return match;
+    const styleObj = extracted.object;
+    const braceEnd = extracted.endIndex;
+
+    // 完整匹配为 :style="{...}"，闭合引号必须在 braceEnd+1
+    if (result.charAt(braceEnd + 1) !== '"') continue;
+
+    // 检测是否已包含 isRtl（幂等性）
+    if (styleObj.includes("isRtl")) continue;
+
+    // 解析对象中的属性
+    const props = parseStyleObject(styleObj);
+    if (!props) continue;
+
+    // 检测是否有方向性属性
+    const directionalProps = props.filter((p) =>
+      Object.prototype.hasOwnProperty.call(RTL_STYLE_MAP, p.key),
+    );
+    if (directionalProps.length === 0) continue;
+
+    // 构建两个分支：RTL 和 LTR
+    const rtlProps = props.map((p) => {
+      const mappedKey = RTL_STYLE_MAP[p.key];
+      return mappedKey ? { key: mappedKey, value: p.value } : p;
+    });
+    const ltrProps = props;
+
+    const rtlObj = `{ ${rtlProps.map((p) => `'${p.key}': ${p.value}`).join(", ")} }`;
+    const ltrObj = `{ ${ltrProps.map((p) => `'${p.key}': ${p.value}`).join(", ")} }`;
+
+    // 确定 :style 或 v-bind:style 前缀
+    const attrPrefix = match[0].includes("v-bind:") ? "v-bind:style" : ":style";
+    const fullEnd = braceEnd + 2; // 包含闭合 } 和 "
+    const replacement = `${attrPrefix}="isRtl ? ${rtlObj} : ${ltrObj}"`;
+
+    result = result.substring(0, attrStart) + replacement + result.substring(fullEnd);
+    replacements += 1;
+    // 调整 lastIndex 以继续搜索替换后的内容
+    styleAttrPattern.lastIndex = attrStart + replacement.length;
+  }
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 使用大括号匹配算法从指定位置提取完整的 { ... } 对象
+ * 支持嵌套大括号（如函数调用中的对象参数）
+ * @param {string} code - 源码
+ * @param {number} braceStart - 起始大括号 { 的索引
+ * @returns {object|null} { object, endIndex } 或 null（匹配失败）
+ */
+function extractBracedObject(code, braceStart) {
+  if (code[braceStart] !== "{") return null;
+  let depth = 0;
+  for (let i = braceStart; i < code.length; i += 1) {
+    if (code[i] === "{") depth += 1;
+    else if (code[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return { object: code.substring(braceStart, i + 1), endIndex: i };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 将静态 style 属性中的方向性 CSS 转换为 :style isRtl 条件表达式
+ * 如 style="padding-right: 32px;" 转换为 :style="isRtl ? { 'padding-left': '32px' } : { 'padding-right': '32px' }"
+ * 仅转换含方向性属性的 style，非方向性 style 保持不变
+ * @param {string} code - template 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformRtlStaticStyles(code) {
+  let replacements = 0;
+  let result = code;
+
+  // 匹配静态 style="..." 属性（非 :style / v-bind:style）
+  // 前瞻确保不是 :style 或 v-bind:style
+  result = result.replace(
+    /\sstyle="([^"]*)"/g,
+    (match, styleValue) => {
+      // 幂等性：已包含 isRtl 则跳过
+      if (styleValue.includes("isRtl")) return match;
+
+      // 解析 CSS 声明：key: value; key: value;
+      const declarations = parseCssDeclarations(styleValue);
+      if (!declarations || declarations.length === 0) return match;
 
       // 检测是否有方向性属性
-      const directionalProps = props.filter((p) =>
-        Object.prototype.hasOwnProperty.call(RTL_STYLE_MAP, p.key),
+      const hasDirectional = declarations.some((d) =>
+        Object.prototype.hasOwnProperty.call(RTL_STYLE_MAP, d.key),
       );
-      if (directionalProps.length === 0) return match;
+      if (!hasDirectional) return match;
 
       // 构建两个分支：RTL 和 LTR
-      const rtlProps = props.map((p) => {
-        const mappedKey = RTL_STYLE_MAP[p.key];
-        return mappedKey ? { key: mappedKey, value: p.value } : p;
+      const rtlProps = declarations.map((d) => {
+        const mappedKey = RTL_STYLE_MAP[d.key];
+        return mappedKey ? { key: mappedKey, value: d.value } : d;
       });
-      const ltrProps = props;
+      const ltrProps = declarations;
 
       const rtlObj = `{ ${rtlProps.map((p) => `'${p.key}': ${p.value}`).join(", ")} }`;
       const ltrObj = `{ ${ltrProps.map((p) => `'${p.key}': ${p.value}`).join(", ")} }`;
 
       replacements += 1;
-      return `:style="isRtl ? ${rtlObj} : ${ltrObj}"`;
+      return ` :style="isRtl ? ${rtlObj} : ${ltrObj}"`;
     },
   );
 
@@ -520,8 +625,35 @@ function transformRtlInlineStyles(code) {
 }
 
 /**
+ * 解析 CSS 声明字符串，提取属性键值对
+ * 支持格式：padding-right: 32px; margin-left: 10px; color: red
+ * @param {string} cssText - CSS 声明字符串
+ * @returns {array|null} 属性数组 [{ key, value }] 或 null（解析失败）
+ */
+function parseCssDeclarations(cssText) {
+  const declarations = [];
+  const parts = cssText.split(";").map((s) => s.trim()).filter(Boolean);
+
+  for (const part of parts) {
+    const colonIdx = part.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = part.substring(0, colonIdx).trim();
+    let value = part.substring(colonIdx + 1).trim();
+    // 将 CSS 值转换为 JS 字符串字面量（加引号）
+    // 如 32px -> '32px', red -> 'red'
+    if (!value.startsWith("'") && !value.startsWith('"')) {
+      value = `'${value}'`;
+    }
+    declarations.push({ key, value });
+  }
+
+  return declarations.length > 0 ? declarations : null;
+}
+
+/**
  * 解析 :style 对象字符串，提取属性键值对
- * 支持格式：{ 'padding-right': '32px', color: 'red' }
+ * 支持格式：{ 'padding-right': '32px', color: 'red', width: getStyle({ active: true }) }
+ * 使用大括号/括号感知的逗号分割，避免值中的嵌套大括号导致截断
  * @param {string} styleObj - 样式对象字符串（含大括号）
  * @returns {array|null} 属性数组 [{ key, value }] 或 null（解析失败）
  */
@@ -530,17 +662,47 @@ function parseStyleObject(styleObj) {
   const inner = styleObj.replace(/^\{|\}$/g, "").trim();
   if (!inner) return [];
 
+  // 使用括号感知的逗号分割，避免值中的 { } ( ) [ ] 内的逗号被误分割
+  const parts = splitByTopLevelCommas(inner);
+  if (parts.length === 0) return null;
+
   const props = [];
-  // 匹配 'key': value 或 "key": value 或 key: value
-  const propPattern = /(?:'([^']+)'|"([^"]+)"|(\w+))\s*:\s*('[^']*'|"[^"]*"|[^,}]+)/g;
-  let match;
-  while ((match = propPattern.exec(inner)) !== null) {
-    const key = match[1] || match[2] || match[3];
-    const value = match[4].trim();
-    // 去掉值外层的引号（保留原始字符串值含引号）
-    props.push({ key, value });
-  }
+  parts.forEach((part) => {
+    const colonIdx = part.indexOf(":");
+    if (colonIdx === -1) return;
+    const keyPart = part.substring(0, colonIdx).trim();
+    const valuePart = part.substring(colonIdx + 1).trim();
+    // 提取 key：去掉引号
+    const key = keyPart.replace(/^['"]|['"]$/g, "");
+    if (!key) return;
+    props.push({ key, value: valuePart });
+  });
   return props.length > 0 ? props : null;
+}
+
+/**
+ * 按顶层逗号分割字符串，感知 { } ( ) [ ] 的嵌套深度
+ * 不分割嵌套结构内部的逗号
+ * @param {string} str - 待分割的字符串
+ * @returns {string[]} 分割后的字符串数组
+ */
+function splitByTopLevelCommas(str) {
+  const parts = [];
+  let depth = 0;
+  let current = "";
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i];
+    if (ch === "{" || ch === "(" || ch === "[") depth += 1;
+    else if (ch === "}" || ch === ")" || ch === "]") depth -= 1;
+    if (ch === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
 }
 
 /**
@@ -571,7 +733,8 @@ function ensureIsRtlInject(code) {
     result = result.replace(/(export\s+default\s*\{)/, '$1\n  inject: ["isRtl"],');
   }
 
-  return { changed: true, code: result };
+  // 如果替换没有实际改变代码（如没有 export default {），不算 changed
+  return { changed: result !== code, code: result };
 }
 
 /**
@@ -641,6 +804,89 @@ function transformLabelWidthToAuto(code) {
  * @param {object} options - { vueComponent, relativePath, preset, config }
  * @returns {object} 变换结果
  */
+/**
+ * 检测路径是否在 beforeRouteEnter 回调内部
+ * beforeRouteEnter 中 this 不可用，需使用 t() 而非 this.t()
+ * @param {object} pathRef - Babel 路径引用
+ * @returns {boolean} 是否在 beforeRouteEnter 内
+ */
+function isInBeforeRouteEnter(pathRef) {
+  return pathRef.findParent(
+    (parentPath) =>
+      parentPath.isObjectMethod() &&
+      parentPath.node.key &&
+      parentPath.node.key.name === "beforeRouteEnter",
+  );
+}
+
+/**
+ * 检测路径是否在 props 默认值内部
+ * props 的 default 属性或函数中 this 不可用，需使用 t() 而非 this.t()
+ * 匹配两种形式：default: "中文" 和 default() { return "中文" }
+ * @param {object} pathRef - Babel 路径引用
+ * @returns {boolean} 是否在 props default 内
+ */
+function isInPropsDefault(pathRef) {
+  // 形式 1：default() { return "中文" } — ObjectMethod
+  const asMethod = pathRef.findParent(
+    (parentPath) =>
+      parentPath.isObjectMethod() &&
+      parentPath.node.key &&
+      parentPath.node.key.name === "default" &&
+      parentPath.parentPath &&
+      parentPath.parentPath.isObjectProperty() &&
+      parentPath.parentPath.node.key &&
+      parentPath.parentPath.node.key.name !== "props" &&
+      parentPath.parentPath.parentPath &&
+      parentPath.parentPath.parentPath.isObjectExpression() &&
+      parentPath.parentPath.parentPath.parentPath &&
+      parentPath.parentPath.parentPath.parentPath.isObjectProperty() &&
+      parentPath.parentPath.parentPath.parentPath.node.key &&
+      parentPath.parentPath.parentPath.parentPath.node.key.name === "props",
+  );
+  if (asMethod) return true;
+
+  // 形式 2：default: "中文" — ObjectProperty with key "default"
+  // 直接检查父节点是否为 default 属性
+  const propPath = pathRef.findParent(
+    (parentPath) =>
+      parentPath.isObjectProperty() &&
+      parentPath.node.key &&
+      parentPath.node.key.name === "default",
+  );
+  if (propPath) {
+    // 确认这个 default 属性在某个 prop 定义对象中（在 props 下）
+    const propOwner = propPath.parentPath; // ObjectExpression of the prop
+    if (propOwner && propOwner.isObjectExpression()) {
+      const propDef = propOwner.parentPath; // ObjectProperty of the prop name
+      if (propDef && propDef.isObjectProperty()) {
+        const propsObj = propDef.parentPath; // ObjectExpression of props
+        if (propsObj && propsObj.isObjectExpression()) {
+          const propsProp = propsObj.parentPath; // ObjectProperty "props"
+          if (
+            propsProp &&
+            propsProp.isObjectProperty() &&
+            propsProp.node.key &&
+            propsProp.node.key.name === "props"
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * 检测路径是否在不可使用 this 的上下文中（beforeRouteEnter、props default）
+ * @param {object} pathRef - Babel 路径引用
+ * @returns {boolean} 是否在不可使用 this 的上下文
+ */
+function isNoThisContext(pathRef) {
+  return isInBeforeRouteEnter(pathRef) || isInPropsDefault(pathRef);
+}
+
 function transformJsFile(source, options) {
   let ast;
   try {
@@ -657,14 +903,23 @@ function transformJsFile(source, options) {
     };
   }
 
-  const translator = options.vueComponent ? "this.t" : "t";
+  const defaultTranslator = options.vueComponent ? "this.t" : "t";
   const patches = [];
+  let usedNoThisT = false;
 
   traverse(ast, {
     enter(pathRef) {
       if (isAlreadyTranslated(pathRef)) {
         pathRef.skip();
         return;
+      }
+
+      // Vue 组件中，beforeRouteEnter 和 props default 的 this 不可用
+      // 这些上下文使用 t() 而非 this.t()，并需要 import { t } from "@/languages"
+      const translator =
+        options.vueComponent && isNoThisContext(pathRef) ? "t" : defaultTranslator;
+      if (translator === "t" && options.vueComponent) {
+        usedNoThisT = true;
       }
 
       if (pathRef.isBinaryExpression({ operator: "+" })) {
@@ -727,7 +982,9 @@ function transformJsFile(source, options) {
 
   let code = applyPatches(source, patches);
 
-  if (!options.vueComponent && needsTranslateImport(code)) {
+  // Vue 组件中如果使用了 t()（beforeRouteEnter/props default 上下文），需要注入 import
+  // 独立 JS 文件也需要注入 import
+  if ((!options.vueComponent || usedNoThisT) && needsTranslateImport(code)) {
     code = injectTranslateImport(code);
   }
 
@@ -1485,6 +1742,18 @@ function cleanupI18n(projectRoot, config) {
     let code = original;
     let fixCount = 0;
 
+    // 0. 修复 beforeRouteEnter/props default 上下文中错误使用的 this.t() -> t()
+    // 这些上下文中 this 不可用，之前的 run 可能错误地包裹为 this.t()
+    const ext = path.extname(filePath);
+    const noThisResult =
+      ext === ".vue"
+        ? fixNoThisTranslateCallsInVue(code)
+        : fixNoThisTranslateCalls(code);
+    if (noThisResult.changed) {
+      code = noThisResult.code;
+      fixCount += noThisResult.fixCount;
+    }
+
     // 1. 展开嵌套 t(t('...'))
     const beforeUnwrap = code;
     code = unwrapNestedTranslateCalls(code);
@@ -1529,6 +1798,101 @@ function cleanupI18n(projectRoot, config) {
     },
     cleanedFiles,
   };
+}
+/**
+ * 修复 beforeRouteEnter 和 props default 上下文中错误使用 this.t() 的问题
+ * 将这些上下文中的 this.t() 转换为 t()，并注入 import { t } from "@/languages"
+ * 用于 cleanupI18n 在重复 run 时自动修复历史遗留的错误 this.t 调用
+ * @param {string} source - 脚本源码
+ * @returns {object} { changed, code, fixCount }
+ */
+function fixNoThisTranslateCalls(source) {
+  // 快速检测：不含 this.t 则无需处理
+  if (!/this\s*\.\s*t\s*\(/.test(source)) {
+    return { changed: false, code: source, fixCount: 0 };
+  }
+
+  let ast;
+  try {
+    ast = parser.parse(source, {
+      sourceType: "unambiguous",
+      plugins: JS_PARSE_PLUGINS,
+    });
+  } catch {
+    return { changed: false, code: source, fixCount: 0 };
+  }
+
+  const patches = [];
+
+  traverse(ast, {
+    CallExpression(pathRef) {
+      const callee = pathRef.node.callee;
+      // 只处理 this.t() 形式的调用
+      if (
+        !t.isMemberExpression(callee) ||
+        !t.isThisExpression(callee.object) ||
+        !t.isIdentifier(callee.property, { name: "t" })
+      ) {
+        return;
+      }
+
+      // 只处理 beforeRouteEnter 和 props default 上下文中的 this.t()
+      if (!isNoThisContext(pathRef)) return;
+
+      // 用定点补丁移除 "this." 前缀，保留 "t(...)" 不变
+      // callee.start 指向 "this"，callee.property.start 指向 "t"
+      patches.push({
+        start: callee.start,
+        end: callee.property.start,
+        code: "",
+      });
+    },
+  });
+
+  if (patches.length === 0) {
+    return { changed: false, code: source, fixCount: 0 };
+  }
+
+  let code = applyPatches(source, patches);
+
+  // 转换为 t() 后需要确保 import { t } from "@/languages" 存在
+  if (needsTranslateImport(code)) {
+    code = injectTranslateImport(code);
+  }
+
+  return { changed: true, code, fixCount: patches.length };
+}
+
+/**
+ * 对 Vue SFC 文件的 script 区域执行 fixNoThisTranslateCalls
+ * 提取 script 内容、修复、注入 import、替换回原文件
+ * @param {string} source - Vue 文件完整源码
+ * @returns {object} { changed, code, fixCount }
+ */
+function fixNoThisTranslateCallsInVue(source) {
+  let sfc;
+  try {
+    sfc = parseComponent(source);
+  } catch {
+    return { changed: false, code: source, fixCount: 0 };
+  }
+
+  if (!sfc.script || !sfc.script.content) {
+    return { changed: false, code: source, fixCount: 0 };
+  }
+
+  const scriptContent =
+    sfc.script.start != null && sfc.script.end != null
+      ? source.slice(sfc.script.start, sfc.script.end)
+      : sfc.script.content;
+
+  const result = fixNoThisTranslateCalls(scriptContent);
+  if (!result.changed) {
+    return { changed: false, code: source, fixCount: 0 };
+  }
+
+  const code = source.replace(scriptContent, result.code);
+  return { changed: true, code, fixCount: result.fixCount };
 }
 
 module.exports = {

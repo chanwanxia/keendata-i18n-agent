@@ -252,7 +252,7 @@ function checkDependencies(projectRoot) {
  // @kd/components 版本检查
  if (!allDeps["@kd/components"]) {
    return createCheck("dependencies", "fail", "缺少 @kd/components 依赖", {
-     suggestion: "安装 @kd/components v5+: pnpm add @kd/components@^5",
+     suggestion: "安装 @kd/components v5.2.1+: pnpm add @kd/components@^5.2.1",
    });
  }
  return createCheck("dependencies", "pass", "i18n 依赖完整");
@@ -433,7 +433,7 @@ function createCheck(id, status, message, extra = {}) {
 }
 
 /**
- * 检查 @kd/components 版本是否 >= 5.0.0（v5 起才有 dist/locale/lang/* 国际化文件）
+ * 检查 @kd/components 版本是否 >= 5.2.1（v5 起才有 dist/locale/lang/* 国际化文件）
  * @param {string} projectRoot - 项目根路径
  * @returns {object} 检查结果
  */
@@ -448,17 +448,19 @@ function checkKdComponentsVersion(projectRoot) {
     (pkg.devDependencies && pkg.devDependencies["@kd/components"]);
   if (!version) {
     return createCheck("kd-components-version", "fail", "未检测到 @kd/components", {
-      suggestion: "安装 @kd/components v5+: pnpm add @kd/components@^5",
+      suggestion: "安装 @kd/components v5.2.1+: pnpm add @kd/components@^5.2.1",
     });
   }
-  const match = version.match(/(\d+)\./);
+  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!match) {
     return createCheck("kd-components-version", "fail", `@kd/components 版本格式无法解析: ${version}`);
   }
   const major = parseInt(match[1], 10);
-  if (major < 5) {
-    return createCheck("kd-components-version", "fail", `@kd/components 版本 ${version} 过低，国际化 locale 需要 v5+`, {
-      suggestion: "升级: pnpm add @kd/components@^5",
+  const minor = parseInt(match[2], 10);
+  const patch = parseInt(match[3], 10);
+  if (major < 5 || (major === 5 && (minor < 2 || (minor === 2 && patch < 1)))) {
+    return createCheck("kd-components-version", "fail", `@kd/components 版本 ${version} 过低，国际化 locale 需要 v5.2.1+`, {
+      suggestion: "升级: pnpm add @kd/components@^5.2.1",
     });
   }
   return createCheck("kd-components-version", "pass", `@kd/components ${version}`);
@@ -537,6 +539,18 @@ function checkElementuiUtils(projectRoot, bootstrapRules) {
   if (!content.includes("@kd/components/dist/locale")) {
     return createCheck("elementui-utils", "fail", "elementui-utils.js 未引入 @kd/components locale", {
       suggestion: "在 elementui-utils.js 中引入 @kd/components 的 locale 语言包",
+    });
+  }
+  // 检测错误的 API 用法：kdLocale.i18n() 不存在，应使用独立语言包导入
+  if (/kdLocale\s*\.\s*i18n\s*\(/.test(content)) {
+    return createCheck("elementui-utils", "fail", "elementui-utils.js 使用了不存在的 kdLocale.i18n() API，应使用独立语言包导入", {
+      suggestion: "重新执行 scaffold（force=true）修复 elementui-utils.js",
+    });
+  }
+  // 检测是否包含必需的 VueI18n 实例导出
+  if (!content.includes("new VueI18n") && !content.includes("VueI18n(")) {
+    return createCheck("elementui-utils", "fail", "elementui-utils.js 缺少 VueI18n 实例创建", {
+      suggestion: "重新执行 scaffold（force=true）修复 elementui-utils.js",
     });
   }
   return createCheck("elementui-utils", "pass", "elementui-utils.js 检查通过");

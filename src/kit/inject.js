@@ -383,6 +383,7 @@ function replaceOldVueI18n(original, output) {
 
 /**
  * 向 vue.config.js 注入 voerkai18n-loader 规则
+ * 使用大括号匹配算法精确移除旧规则，避免正则匹配不完整导致的残留问题
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
@@ -400,37 +401,37 @@ function injectVueConfig(projectRoot, options = {}) {
     if (!options.force) {
       return { updated: false, message: "vue.config.js 已包含 voerkai18n-loader" };
     }
-    // force 模式：先移除所有已存在的 voerkai18n-loader 规则块，再重新注入一个
     content = removeVoerkai18nLoaderRules(content);
   }
 
-  const loaderRule = `
-        {
-          test: /\\.(js|vue)$/,
-          use: [
-            {
-              loader: "voerkai18n-loader",
-              options: {
-                autoImport: true,
-                debug: false,
-              },
-            },
-          ],
-          include: path.join(__dirname, "src"),
-          enforce: "pre",
-        },`;
+  const loaderRule = [
+    "        {",
+    "          test: /\\.(js|vue)$/,",
+    "          use: [",
+    "            {",
+    '              loader: "voerkai18n-loader",',
+    "              options: {",
+    "                autoImport: true,",
+    "                debug: false,",
+    "              },",
+    "            },",
+    "          ],",
+    '          include: path.join(__dirname, "src"),',
+    '          enforce: "pre",',
+    "        },",
+  ].join("\n");
 
   if (content.includes("module:") && content.includes("rules:")) {
-    content = content.replace(/(rules:\s*\[)/, "$1" + loaderRule);
+    content = content.replace(/(rules:\s*\[)/, "$1\n" + loaderRule);
   } else if (content.includes("configureWebpack")) {
     content = content.replace(
       /(configureWebpack:\s*\{)/,
-      "$1\n    module: {\n      rules: [" + loaderRule + "\n      ],\n    },",
+      "$1\n    module: {\n      rules: [\n" + loaderRule + "\n      ],\n    },",
     );
   } else {
     content = content.replace(
-      /(\};)/,
-      "  configureWebpack: {\n    module: {\n      rules: [" +
+      /(\};\s*$)/,
+      "  configureWebpack: {\n    module: {\n      rules: [\n" +
         loaderRule +
         "\n      ],\n    },\n  },\n$1",
     );
@@ -441,18 +442,145 @@ function injectVueConfig(projectRoot, options = {}) {
 }
 
 /**
- * 移除 vue.config.js 中所有已存在的 voerkai18n-loader 规则块
- * 用于 force 模式下先清理再重新注入，避免重复规则
+ * 移除 vue.config.js 中所有已存在的 voerkai18n-loader 规则块及孤立残留片段
+ * 使用大括号匹配算法精确定位完整规则对象，并重建 rules 数组只保留有效规则
  * @param {string} content - vue.config.js 内容
  * @returns {string} 清理后的内容
  */
 function removeVoerkai18nLoaderRules(content) {
-  // 移除包含 voerkai18n-loader 的完整规则对象 { test: ..., use: [{ loader: "voerkai18n-loader", ... }], ... }
-  // 匹配从 { 开始到 }, 结束、中间包含 voerkai18n-loader 的块
-  return content.replace(
-    /\{\s*test:\s*\/\\\.\(js\|vue\)\$\/,\s*use:\s*\[[\s\S]*?voerkai18n-loader[\s\S]*?\},?\s*$/gm,
-    "",
-  );
+  let result = content;
+
+  // 第一步：移除所有包含 voerkai18n-loader 的完整规则块
+  while (true) {
+    const loaderIdx = result.indexOf("voerkai18n-loader");
+    if (loaderIdx === -1) break;
+
+    let braceStart = -1;
+    let depth = 0;
+    for (let i = loaderIdx; i >= 0; i--) {
+      if (result[i] === "}") depth++;
+      else if (result[i] === "{") {
+        if (depth === 0) {
+          const prefix = result.substring(i, loaderIdx);
+          if (prefix.includes("test:")) {
+            braceStart = i;
+            break;
+          }
+        } else {
+          depth--;
+        }
+      }
+    }
+
+    if (braceStart === -1) break;
+
+    depth = 0;
+    let braceEnd = -1;
+    for (let i = braceStart; i < result.length; i++) {
+      if (result[i] === "{") depth++;
+      else if (result[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          braceEnd = i + 1;
+          break;
+        }
+      }
+    }
+
+    if (braceEnd === -1) break;
+
+    let removeEnd = braceEnd;
+    while (removeEnd < result.length && result[removeEnd] === ",") removeEnd++;
+    while (removeEnd < result.length && /\s/.test(result[removeEnd])) removeEnd++;
+
+    result = result.substring(0, braceStart) + result.substring(removeEnd);
+  }
+
+  // 第二步：重建 rules 数组，只保留完整的规则对象（含 test: 属性）
+  // 这会清理之前错误注入留下的孤立 }、],、include、enforce 等残骸
+  result = rebuildRulesArray(result);
+
+  return result;
+}
+
+/**
+ * 找到 rules: [ ... ] 数组，移除其中不包含 test: 的孤立片段
+ * 通过查找下一个同级属性来定位 rules 数组边界，不受孤立 } 干扰
+ * 保留完整的规则对象，清理破碎代码
+ * @param {string} content - vue.config.js 内容
+ * @returns {string} 清理后的内容
+ */
+function rebuildRulesArray(content) {
+  const rulesStartMatch = content.match(/rules:\s*\[/);
+  if (!rulesStartMatch) return content;
+
+  const bracketStart = rulesStartMatch.index + rulesStartMatch[0].length;
+
+  // 查找 rules 数组的闭合 ]：找下一个同级属性或 configureWebpack 的结束
+  // 同级属性如 plugins:, optimization:, output:, name:, resolve:, externals: 等
+  // 或者 module: 的闭合 },
+  const afterRules = content.substring(bracketStart);
+  const closingMatch = afterRules.match(/\n\s*\](\s*,|\s*\n)/);
+  if (!closingMatch) return content;
+
+  // 找到最后一个 ] 在合理的缩进位置（至少 2 空格缩进，属于 module.rules 的闭合）
+  // 从后往前找：找 closingMatch 之前、且后面紧跟 }, 或空行的 ]
+  let searchEnd = closingMatch.index;
+  // 扩大搜索范围：找 closingMatch 之后紧跟 }, 的位置（这才是 rules 数组真正的闭合）
+  const fullCloseMatch = afterRules.match(/\n[ \t]*\]\s*,?\s*\n\s*\}/);
+  if (fullCloseMatch) {
+    searchEnd = fullCloseMatch.index + fullCloseMatch[0].indexOf("]");
+  }
+
+  const bracketEnd = bracketStart + searchEnd;
+  const before = content.substring(0, bracketStart);
+  const rulesBody = content.substring(bracketStart, bracketEnd);
+  const after = content.substring(bracketEnd);
+
+  // 在 rulesBody 中提取所有完整的规则对象（含 test: 属性）
+  const validRules = [];
+  let i = 0;
+  while (i < rulesBody.length) {
+    while (i < rulesBody.length && /[\s,]/.test(rulesBody[i])) i++;
+    if (i >= rulesBody.length) break;
+
+    if (rulesBody[i] !== "{") {
+      while (i < rulesBody.length && rulesBody[i] !== "\n") i++;
+      continue;
+    }
+
+    let depth = 0;
+    const ruleStart = i;
+    let ruleEnd = -1;
+    for (let j = i; j < rulesBody.length; j++) {
+      if (rulesBody[j] === "{") depth++;
+      else if (rulesBody[j] === "}") {
+        depth--;
+        if (depth === 0) {
+          ruleEnd = j + 1;
+          break;
+        }
+      }
+    }
+
+    if (ruleEnd === -1) break;
+
+    const ruleText = rulesBody.substring(ruleStart, ruleEnd);
+    if (ruleText.includes("test:")) {
+      validRules.push(ruleText.trim());
+    }
+
+    i = ruleEnd;
+  }
+
+  if (validRules.length === 0) {
+    return before + "\n      " + after.trimStart();
+  }
+
+  const indent = "\n        ";
+  const closeIndent = "\n      ";
+  const rulesContent = validRules.map((r) => indent + r + ",").join("");
+  return before + rulesContent + closeIndent + after.trimStart();
 }
 
 /**
@@ -599,6 +727,19 @@ function replaceRouteWatch(content, _projectRoot) {
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
  */
+/**
+ * 在请求拦截器中注入 Accept-Language 和 X-Timezone header
+ * 注入逻辑：
+ * 1. 优先处理含 config.headers["menuKey"] 的文件（header 配置的权威位置）
+ *    - 若已有完整的 languageMap + X-Timezone 注入：跳过
+ *    - 若有旧的 Accept-Language（无 languageMap 或无 X-Timezone）：原地替换升级
+ *    - 若无 Accept-Language：在 menuKey 前注入
+ * 2. 回退到含 interceptors.request.use 的文件：仅当没有 menuKey 文件时才处理
+ * 3. 整个 src/utils/ 只注入一个文件，避免重复
+ * @param {string} projectRoot - 目标项目根路径
+ * @param {object} options - 选项 { force: boolean }
+ * @returns {object} 注入结果
+ */
 function injectAcceptLanguage(projectRoot, _options = {}) {
   const utilsDir = path.join(projectRoot, "src/utils");
   if (!fs.existsSync(utilsDir)) {
@@ -607,35 +748,201 @@ function injectAcceptLanguage(projectRoot, _options = {}) {
 
   const files = fs.readdirSync(utilsDir).filter((f) => f.endsWith(".js"));
 
+  /** 待注入的 header 设置语句（不含缩进，缩进由上下文动态确定） */
+  const headerLines = [
+    'const languageMap = {',
+    '  zh: "zh-CN",',
+    '  en: "en-US",',
+    '  jp: "ja-JP",',
+    '  ar: "ar",',
+    '};',
+    'config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];',
+    'config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";',
+  ];
+
+  /**
+   * 判断文件是否已包含完整的 header 注入（languageMap + Accept-Language + X-Timezone）
+   * @param {string} content - 文件内容
+   * @returns {boolean} 是否已完整注入
+   */
+  function isFullyInjected(content) {
+    return (
+      content.includes("Accept-Language") &&
+      content.includes("languageMap") &&
+      content.includes("X-Timezone")
+    );
+  }
+
+  /**
+   * 在 menuKey 行前注入或替换 header 设置
+   * @param {string} content - 文件内容
+   * @param {string} filePath - 文件路径
+   * @param {string} file - 文件名
+   * @returns {object|null} 注入结果，null 表示未处理
+   */
+  function injectAtMenuKey(content, filePath, file) {
+    const menuKeyMatch = content.match(/^([ \t]*)config\.headers\["menuKey"\]/m);
+    if (!menuKeyMatch) return null;
+
+    const indent = menuKeyMatch[1];
+
+    // 已完整注入：跳过
+    if (isFullyInjected(content)) return "skip";
+
+    // 有旧的 Accept-Language（无 languageMap 或无 X-Timezone）：原地替换
+    if (content.includes("Accept-Language")) {
+      // 移除旧的 Accept-Language 行（可能有多行，全部清除）
+      let newContent = content.replace(
+        /^[ \t]*config\.headers\["Accept-Language"\].*$/gm,
+        "",
+      );
+      // 移除可能残留的旧 X-Timezone 行
+      newContent = newContent.replace(
+        /^[ \t]*config\.headers\["X-Timezone"\].*$/gm,
+        "",
+      );
+      // 移除可能残留的旧 languageMap 块（单行或多行）
+      newContent = newContent.replace(
+        /^[ \t]*const languageMap = \{[\s\S]*?\};\s*$/gm,
+        "",
+      );
+      // 清理被移除行留下的空行（连续 2+ 空行合并为 1 个空行）
+      newContent = newContent.replace(/\n{3,}/g, "\n\n");
+      // 清理函数体开头的多余空行（如 `=> {\n\n  const` -> `=> {\n  const`）
+      newContent = newContent.replace(/(\{)\n\n+/g, "$1\n");
+
+      // 重新匹配 menuKey 位置（内容可能已变化）
+      const newMenuKeyMatch = newContent.match(
+        /^([ \t]*)config\.headers\["menuKey"\]/m,
+      );
+      if (newMenuKeyMatch) {
+        const insertPos = newMenuKeyMatch.index;
+        const newIndent = newMenuKeyMatch[1];
+        const injection =
+          headerLines.map((line) => newIndent + line).join("\n") + "\n";
+        newContent =
+          newContent.slice(0, insertPos) + injection + newContent.slice(insertPos);
+      }
+      fs.writeFileSync(filePath, newContent, "utf8");
+      return { updated: true, file: path.join("src/utils", file) };
+    }
+
+    // 无 Accept-Language：在 menuKey 前注入
+    const injection =
+      headerLines.map((line) => indent + line).join("\n") + "\n";
+    const insertPos = menuKeyMatch.index;
+    const newContent =
+      content.slice(0, insertPos) + injection + content.slice(insertPos);
+    fs.writeFileSync(filePath, newContent, "utf8");
+    return { updated: true, file: path.join("src/utils", file) };
+  }
+
+  /**
+   * 在 interceptors.request.use 回调顶部注入 header 设置
+   * @param {string} content - 文件内容
+   * @param {string} filePath - 文件路径
+   * @param {string} file - 文件名
+   * @returns {object|null} 注入结果，null 表示未处理
+   */
+  function injectAtInterceptor(content, filePath, file) {
+    // 已完整注入：跳过
+    if (isFullyInjected(content)) return "skip";
+
+    // 有旧的不完整注入：不在此处处理（由 menuKey 路径处理）
+    if (content.includes("Accept-Language")) return null;
+
+    const interceptorPattern =
+      /(interceptors\.request\.use\(\s*(?:\(([^)]*)\)\s*=>|function\s*\(([^)]*)\))\s*\{)/;
+    const match = content.match(interceptorPattern);
+    if (!match) return null;
+
+    const afterMatch = content.slice(match.index + match[0].length);
+    const nextLineMatch = afterMatch.match(/^([ \t]*)\S/m);
+    const indent = nextLineMatch ? nextLineMatch[1] : "  ";
+    const injection =
+      "\n" + headerLines.map((line) => indent + line).join("\n");
+    const insertPos = match.index + match[0].length;
+    const newContent =
+      content.slice(0, insertPos) + injection + content.slice(insertPos);
+    fs.writeFileSync(filePath, newContent, "utf8");
+    return { updated: true, file: path.join("src/utils", file) };
+  }
+
+  // 第一轮：优先处理含 config.headers["menuKey"] 的文件
+  for (const file of files) {
+    const filePath = path.join(utilsDir, file);
+    const content = fs.readFileSync(filePath, "utf8");
+
+    if (!content.includes('config.headers["menuKey"]')) continue;
+
+    const result = injectAtMenuKey(content, filePath, file);
+    if (result === "skip") continue;
+    if (result) return result;
+  }
+
+  // 如果含 menuKey 的文件已完整注入，清理其他文件中的冗余注入
+  let menuKeyFileFullyInjected = false;
+  for (const file of files) {
+    const filePath = path.join(utilsDir, file);
+    const content = fs.readFileSync(filePath, "utf8");
+    if (
+      content.includes('config.headers["menuKey"]') &&
+      isFullyInjected(content)
+    ) {
+      menuKeyFileFullyInjected = true;
+      break;
+    }
+  }
+
+  if (menuKeyFileFullyInjected) {
+    let cleanedFile = null;
+    for (const file of files) {
+      const filePath = path.join(utilsDir, file);
+      const content = fs.readFileSync(filePath, "utf8");
+      // 跳过含 menuKey 的文件（权威位置），只清理其他文件中的冗余注入
+      if (content.includes('config.headers["menuKey"]')) continue;
+      if (!content.includes("Accept-Language")) continue;
+
+      // 移除冗余的 header 注入
+      let newContent = content;
+      newContent = newContent.replace(
+        /^[ \t]*const languageMap = \{[\s\S]*?\};\s*$/gm,
+        "",
+      );
+      newContent = newContent.replace(
+        /^[ \t]*config\.headers\["Accept-Language"\].*$/gm,
+        "",
+      );
+      newContent = newContent.replace(
+        /^[ \t]*config\.headers\["X-Timezone"\].*$/gm,
+        "",
+      );
+      // 清理多余空行
+      newContent = newContent.replace(/\n{3,}/g, "\n\n");
+      newContent = newContent.replace(/(\{)\n\n+/g, "$1\n");
+      newContent = newContent.replace(/\n\n+(  return)/g, "\n  $1");
+
+      if (newContent !== content) {
+        fs.writeFileSync(filePath, newContent, "utf8");
+        cleanedFile = path.join("src/utils", file);
+      }
+    }
+    if (cleanedFile) {
+      return { updated: true, file: cleanedFile };
+    }
+    return { updated: false, message: "header 注入已完成，无冗余需清理" };
+  }
+
+  // 第二轮：回退到含 interceptors.request.use 的文件（仅处理未注入的）
   for (const file of files) {
     const filePath = path.join(utilsDir, file);
     const content = fs.readFileSync(filePath, "utf8");
 
     if (!content.includes("interceptors.request.use")) continue;
-    // 幂等性：已包含 Accept-Language 则跳过，force 模式也不重新注入
-    if (content.includes("Accept-Language")) continue;
 
-    const headerInjection = `
-  const languageMap = { zh: "zh-CN", en: "en-US", jp: "ja-JP", ar: "ar" };
-  config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];
-  config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";`;
-
-    // 匹配 interceptors.request.use 后的第一个回调（成功处理器）的开括号 {
-    // 支持 (config) => { 和 function(config) { 两种写法
-    // 不使用 [^,]+ 跳过到第二个回调，避免误注入到 error handler
-    const interceptorPattern =
-      /(interceptors\.request\.use\(\s*(?:\(([^)]*)\)\s*=>|function\s*\(([^)]*)\))\s*\{)/;
-
-    const match = content.match(interceptorPattern);
-    if (match) {
-      const insertPos = match.index + match[0].length;
-      const newContent =
-        content.slice(0, insertPos) +
-        headerInjection +
-        content.slice(insertPos);
-      fs.writeFileSync(filePath, newContent, "utf8");
-      return { updated: true, file: path.join("src/utils", file) };
-    }
+    const result = injectAtInterceptor(content, filePath, file);
+    if (result === "skip") continue;
+    if (result) return result;
   }
 
   return { updated: false, message: "未找到合适的请求拦截器" };
@@ -745,7 +1052,7 @@ function findHeaderComponent(dir) {
 }
 
 /**
- * 检查 @kd/components 版本是否 >= 5.0.0（v5 起才有 dist/locale/lang/* 国际化文件）
+ * 检查 @kd/components 版本是否 >= 5.2.1（v5 起才有 dist/locale/lang/* 国际化文件）
  * 仅输出 warn，不阻塞流程
  * @param {string} projectRoot - 目标项目根路径
  * @returns {object|null} 版本检查结果，null 表示未找到 @kd/components
@@ -764,16 +1071,18 @@ function checkKdComponentsVersion(projectRoot) {
   }
 
   // 提取版本号中的主版本号（支持 ^5.2.1, ~5.0.0, 5.x 等格式）
-  const match = version.match(/(\d+)\./);
+  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!match) {
     return { ok: false, message: `@kd/components 版本格式无法解析: ${version}` };
   }
 
   const major = parseInt(match[1], 10);
-  if (major < 5) {
+  const minor = parseInt(match[2], 10);
+  const patch = parseInt(match[3], 10);
+  if (major < 5 || (major === 5 && (minor < 2 || (minor === 2 && patch < 1)))) {
     return {
       ok: false,
-      message: `@kd/components 版本 ${version} 过低，国际化 locale 文件需要 v5+，请升级: pnpm add @kd/components@^5`,
+      message: `@kd/components 版本 ${version} 过低，国际化 locale 文件需要 v5.2.1+，请升级: pnpm add @kd/components@^5`,
     };
   }
 

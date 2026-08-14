@@ -257,8 +257,6 @@ async function executeAction(action, state, flags) {
   }
 
  if (action === "apply") {
-   // 先清理之前 run 可能遗留的问题（嵌套 t()、重复 import 等），保证幂等性
-   kit.cleanupI18n(projectRoot, config);
    state.results.apply = kit.applyI18n(projectRoot, config, { dryRun: false });
    console.log(
      `[i18n-agent] apply: 改写 ${state.results.apply.summary.changedFileCount} 个文件, ${state.results.apply.summary.replacementCount} 处替换`,
