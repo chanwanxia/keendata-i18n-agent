@@ -1,6 +1,9 @@
 const { loadAgentConfig, resolveProjectRoot } = require("./config");
 const { runAgent } = require("./runner");
 const kit = require("./kit");
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("child_process");
 
 /**
  * CLI 入口函数
@@ -8,6 +11,10 @@ const kit = require("./kit");
  */
 async function main(argv) {
   const { command, flags } = parseArgs(argv);
+  if (isVersionCommand(command)) {
+    printVersion();
+    return;
+  }
   if (isHelpCommand(command)) {
     printHelp();
     return;
@@ -34,6 +41,11 @@ async function main(argv) {
   ];
   if (kitCommands.includes(command)) {
     kit.main(argv);
+    return;
+  }
+
+  if (command === "update") {
+    await updateCommand(flags);
     return;
   }
 
@@ -100,6 +112,7 @@ function parseArgs(argv) {
     if (item === "--no-resume") flags.resume = false;
     if (item === "--reset-key") flags.resetKey = true;
     if (item === "--force") flags.force = true;
+    if (item === "--check") flags.check = true;
 
     if (valueFlags.includes(item)) {
       const key = toCamel(item);
@@ -177,6 +190,8 @@ function printHelp() {
 用法:
   kd-i18n run [flags]
   kd-i18n audit [flags]
+  kd-i18n -v
+  kd-i18n update [--check]
 
 命令:
   run        执行 i18n agent 全流程（cleanup → scaffold → inject → doctor → scan → apply → extract → translate → validate → compile）
@@ -192,6 +207,8 @@ function printHelp() {
   compile    执行语言包编译命令
   profile    探测目标项目的 i18n 接入画像
   init       输出或写入配置模板（--write-config 写入）
+  -v         查看当前安装版本
+  update     检查并更新到 npm 上的最新版本（--check 仅检查不更新）
 
 常用参数:
   --project PATH                        指定目标项目路径（默认当前目录）
@@ -217,6 +234,7 @@ function printHelp() {
   LLM_API_KEY=xxx kd-i18n run
   kd-i18n audit
   kd-i18n audit --json
+  kd-i18n update
 `);
 }
 
@@ -227,6 +245,136 @@ function printHelp() {
  */
 function isHelpCommand(command) {
   return ["help", "--help", "-h"].includes(command);
+}
+
+/**
+ * 判断是否为版本查看命令
+ * @param {string} command - 命令名称
+ * @returns {boolean} 是否为版本查看命令
+ */
+function isVersionCommand(command) {
+  return ["-v", "--version", "-V"].includes(command);
+}
+
+/**
+ * 读取当前安装的包版本号
+ * @returns {string} 版本号
+ */
+function getPackageVersion() {
+  const pkgPath = path.join(__dirname, "..", "package.json");
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  return pkg.version;
+}
+
+/**
+ * 打印当前版本信息
+ */
+function printVersion() {
+  const version = getPackageVersion();
+  console.log(`@kd/i18n v${version}`);
+}
+
+/**
+ * 从 npm registry 查询最新发布版本
+ * @returns {string|null} 最新版本号，查询失败返回 null
+ */
+function getLatestVersion() {
+  try {
+    const output = execSync("npm view @kd/i18n version", {
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 比较两个语义化版本号
+ * @param {string} current - 当前版本
+ * @param {string} latest - 最新版本
+ * @returns {boolean} latest 是否大于 current
+ */
+function isNewerVersion(current, latest) {
+  const parse = (v) => v.split(".").map(Number);
+  const [a1, a2, a3] = parse(current);
+  const [b1, b2, b3] = parse(latest);
+  if (b1 !== a1) return b1 > a1;
+  if (b2 !== a2) return b2 > a2;
+  return b3 > a3;
+}
+
+/**
+ * 检测当前全局安装使用的包管理器
+ * @returns {string} 包管理器命令（npm / pnpm / yarn）
+ */
+function detectPackageManager() {
+  const execPath = process.env.npm_execpath || "";
+  if (execPath.includes("pnpm")) {
+    return "pnpm";
+  }
+  if (execPath.includes("yarn")) {
+    return "yarn";
+  }
+  return "npm";
+}
+
+/**
+ * 执行更新命令：检查 npm registry 是否有新版本，若有则全局安装最新版
+ * @param {object} flags - 命令行标志
+ */
+async function updateCommand(flags) {
+  const current = getPackageVersion();
+  console.log(`[i18n-agent] 当前版本: ${current}`);
+
+  if (flags.check) {
+    const latest = getLatestVersion();
+    if (!latest) {
+      console.log("[i18n-agent] 无法查询最新版本，请检查网络连接后重试。");
+      process.exitCode = 1;
+      return;
+    }
+    if (isNewerVersion(current, latest)) {
+      console.log(`[i18n-agent] 发现新版本: ${latest}（当前 ${current}）`);
+      console.log("[i18n-agent] 运行 kd-i18n update 进行更新。");
+    } else {
+      console.log(`[i18n-agent] 已是最新版本: ${current}`);
+    }
+    return;
+  }
+
+  const latest = getLatestVersion();
+  if (!latest) {
+    console.log("[i18n-agent] 无法查询最新版本，请检查网络连接后重试。");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!isNewerVersion(current, latest)) {
+    console.log(`[i18n-agent] 已是最新版本: ${current}`);
+    return;
+  }
+
+  console.log(`[i18n-agent] 发现新版本: ${latest}（当前 ${current}）`);
+  const pm = detectPackageManager();
+  const installCmd =
+    pm === "pnpm"
+      ? "pnpm add -g @kd/i18n@latest"
+      : pm === "yarn"
+        ? "yarn global add @kd/i18n@latest"
+        : "npm install -g @kd/i18n@latest";
+
+  console.log(`[i18n-agent] 正在通过 ${pm} 更新...`);
+  try {
+    execSync(installCmd, { stdio: "inherit" });
+    console.log(`[i18n-agent] 更新完成: ${current} → ${latest}`);
+  } catch {
+    console.log("[i18n-agent] 更新失败，请手动执行以下命令：");
+    console.log(`  ${installCmd}`);
+    process.exitCode = 1;
+  }
 }
 
 module.exports = {
