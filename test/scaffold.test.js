@@ -97,3 +97,73 @@ test("scaffold 创建 postcss.config.js", () => {
   const content = fs.readFileSync(postcssPath, "utf8");
   assert.ok(content.includes("postcss-rtlcss"));
 });
+
+// ===== postcss.config.js 重复 key 修复测试 =====
+
+test("ensurePostcssConfig force 模式不产生重复 postcss-rtlcss key", () => {
+  const { ensurePostcssConfig } = require("../src/kit/scaffold");
+  const projectRoot = createTempProject();
+
+  // 先 scaffold 一次创建 postcss.config.js
+  scaffold(projectRoot, { packageName: "test" }, {});
+
+ // 模拟已有 postcss-rtlcss 的情况下 force 重新注入
+ ensurePostcssConfig(projectRoot, { force: true });
+
+  const content = fs.readFileSync(path.join(projectRoot, "postcss.config.js"), "utf8");
+  // 统计 postcss-rtlcss 出现次数（key 出现在 plugins 对象中）
+  const matches = content.match(/["']?postcss-rtlcss["']?\s*:/g) || [];
+  assert.strictEqual(matches.length, 1, `应只有 1 个 postcss-rtlcss key，实际 ${matches.length} 个:\n${content}`);
+});
+
+test("ensurePostcssConfig 向已有配置注入不重复", () => {
+  const { ensurePostcssConfig } = require("../src/kit/scaffold");
+  const projectRoot = createTempProject();
+
+  // 创建一个已有 autoprefixer 但没有 postcss-rtlcss 的配置
+  fs.writeFileSync(
+    path.join(projectRoot, "postcss.config.js"),
+    `module.exports = {\n  plugins: {\n    autoprefixer: {},\n  },\n};\n`,
+  );
+
+  ensurePostcssConfig(projectRoot, {});
+
+  const content = fs.readFileSync(path.join(projectRoot, "postcss.config.js"), "utf8");
+  const matches = content.match(/["']?postcss-rtlcss["']?\s*:/g) || [];
+  assert.strictEqual(matches.length, 1, "注入后应只有 1 个 postcss-rtlcss key");
+  assert.ok(content.includes("autoprefixer"), "原有的 autoprefixer 应保留");
+});
+
+test("ensurePostcssConfig force 模式移除旧配置再注入", () => {
+  const { ensurePostcssConfig } = require("../src/kit/scaffold");
+  const projectRoot = createTempProject();
+
+  // 创建已有 postcss-rtlcss（旧配置，可能格式不同）的文件
+  fs.writeFileSync(
+    path.join(projectRoot, "postcss.config.js"),
+    `module.exports = {\n  plugins: {\n    autoprefixer: {},\n    "postcss-rtlcss": {\n      enabled: false,\n    },\n  },\n};\n`,
+  );
+
+  // force 重新注入
+  ensurePostcssConfig(projectRoot, { force: true });
+
+  const content = fs.readFileSync(path.join(projectRoot, "postcss.config.js"), "utf8");
+  const matches = content.match(/["']?postcss-rtlcss["']?\s*:/g) || [];
+  assert.strictEqual(matches.length, 1, "force 后应只有 1 个 postcss-rtlcss key");
+  assert.ok(content.includes("enabled: true"), "应使用新配置 enabled: true");
+  assert.ok(!content.includes("enabled: false"), "旧配置 enabled: false 应被移除");
+});
+
+test("i18nMixin 模板声明 VoerkaI18n 全局变量", () => {
+  const projectRoot = createTempProject();
+  scaffold(projectRoot, { packageName: "test" }, {});
+
+  const content = fs.readFileSync(
+    path.join(projectRoot, "src/languages/i18n-plugin/i18nMixin.js"),
+    "utf8",
+  );
+  assert.ok(
+    content.includes("/* global VoerkaI18n */"),
+    "i18nMixin.js 应声明 VoerkaI18n 为全局变量，避免 eslint no-undef 报错",
+  );
+});

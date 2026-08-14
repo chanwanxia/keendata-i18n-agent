@@ -1,3 +1,4 @@
+/* global VoerkaI18n */
 export function i18nMixin() {
   return {
     provide() {

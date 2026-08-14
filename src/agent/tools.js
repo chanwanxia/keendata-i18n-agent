@@ -289,12 +289,20 @@ function createTools(projectRoot, config) {
         // compile 后自动修复 idMap.js 中未加引号的中文 key
         if (result.status === 0) {
           const fixResult = kit.fixIdMapKeys(projectRoot);
+          // 对编译生成的语言包文件执行 eslint --fix，修复引号等格式问题
+          const generatedFiles = config.generatedFiles || [];
+          let eslintFixedCount = 0;
+          if (generatedFiles.length > 0) {
+            const eslintResult = kit.runEslintFix(projectRoot, generatedFiles);
+            eslintFixedCount = eslintResult.fixedCount || 0;
+          }
           return {
             ok: true,
             command: config.compileCommand,
             stdout: result.stdout.slice(0, 2000),
             stderr: result.stderr.slice(0, 2000),
             idMapFixed: fixResult.fixed,
+            eslintFixedCount,
           };
         }
         return {

@@ -38,7 +38,7 @@ function buildSystemPrompt(projectRoot, config) {
 3. doctor — 检查基建完整性
 4. scan — 扫描未国际化中文
 5. apply — 自动改写可安全处理的中文文案（先用 dryRun 预览，再正式执行；写入后自动 eslint --fix）
-   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。**apply 正式执行时会自动清理历史遗留问题**（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用），无需单独调用 cleanup_i18n。
+   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换、国际化时区代码变换（el-date-picker→kd-date-picker、Date.now()→this.tzDateNow()、new Date()→this.tzNewDate()、parseTime()→parseTime(this.tzNewDate())、dayjs()→this.$i18nNow()）等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。**apply 正式执行时会自动清理历史遗留问题**（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用），无需单独调用 cleanup_i18n。
 6. extract — 提取词条到翻译源文件
 7. translate — 补齐缺失翻译（推荐使用 llm provider 获得最佳翻译质量）
 8. validate — 校验翻译

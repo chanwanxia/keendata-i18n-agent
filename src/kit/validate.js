@@ -269,13 +269,22 @@ function fixIdMapKeys(projectRoot) {
   const original = content;
 
   // 引号包裹未加引号的 key（中文、英文标识符等紧跟冒号的情况）
-  const unquotedKeyPattern = /(^|,)\s*([\u3400-\u9fff\w]+)\s*:/gm;
-  content = content.replace(unquotedKeyPattern, (match, prefix, key) => {
-    // 如果 key 已经被引号包裹则跳过
-    if (key.startsWith('"') || key.startsWith("'")) return match;
-    // 引号包裹 key，转义内部双引号
-    return `${prefix} "${key}":`;
-  });
+  // 匹配换行/文件首 + 缩进 + key + 冒号，保留原有缩进和换行结构
+  // 不使用 (^|,) 前缀，因为 \s* 会吞掉换行符导致多行被合并为一行
+  content = content.replace(
+    /(^|\n)([ \t]*)([\u3400-\u9fff\w]+)(\s*):/g,
+    (match, newline, indent, key, trailingSpace) => {
+      // 如果 key 已经被引号包裹则跳过
+      if (key.startsWith('"') || key.startsWith("'")) return match;
+      // 引号包裹 key，转义内部双引号，保留缩进和换行
+      const escapedKey = key.replace(/"/g, '\\"');
+      return `${newline}${indent}"${escapedKey}"${trailingSpace}:`;
+    },
+  );
+
+  // 注意：不对引号内 key 的空格做 trim 处理
+  // default.json 中的 key 可能合法地包含空格（如 "只读 " 和 "只读" 是两个不同的 key）
+  // trim 空格会导致 idMap.js 中产生重复 key，与 default.json 不一致
 
   // 移除尾部分号（}; → }）
   content = content.replace(/}\s*;?\s*$/, "}");

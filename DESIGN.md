@@ -299,9 +299,12 @@ template 变换仍用正则（因为 Vue2 template 不是标准 JS，无法直�
 
 ### 4.5 import 注入策略
 
-- **Vue 文件**：不注入 `import { t }`（loader 的 autoImport 处理）
+- **Vue 文件**：仅当 `beforeRouteEnter` 或 `props` default 中存在中文（生成独立 `t()` 调用）时才注入 `import { t } from "@/languages"`
+  - Vue template 中的 `t()` 由 voerkai18n-loader 的 autoImport 处理，无需手动 import
+  - Vue script 中的 `this.t()` 由 i18nPlugin 实例方法提供，无需手动 import
+  - `beforeRouteEnter` / `props` default 上下文中 `this` 不可用，使用 `t()` 而非 `this.t()`，此时需要 import
 - **独立 JS 文件**：注入 `import { t } from "@/languages"`（已有则跳过）
-- 当前代码已正确实现此逻辑
+- **cleanup 阶段**：自动移除 Vue 文件中不必要的 `import { t }`（script 区域无独立 `t()` 调用时）
 
 ### 4.6 `.meta.title` 表达式自动 t() 包裹
 
@@ -377,6 +380,35 @@ apply 模块自动转换：
 - `label-width="auto"` → 保持不变
 
 仅处理静态字符串值（`label-width="XXpx"`），不处理动态绑定（`:label-width="..."`）——动态绑定应由 `getI18nWidth` 处理。
+
+---
+
+### 4.11 国际化时区处理
+
+apply 模块自动执行以下时区相关代码变换，确保时间处理与用户时区一致：
+
+**组件替换（template 级别）**：
+- `<el-date-picker type="datetime">` → `<kd-date-picker type="datetime">`（仅 `type="datetime"`，其他 type 不处理）
+- 支持配对标签和自闭合标签，闭合标签同步替换
+
+**JS 代码替换（script / 独立 JS 级别）**：
+
+| 原始代码 | 替换为 | 说明 |
+|---|---|---|
+| `Date.now()` | `this.tzDateNow()` | 获取当前时区时间戳 |
+| `new Date()` | `this.tzNewDate()` | 仅无参调用，`new Date("xxx")` 不处理 |
+| `parseTime()` | `parseTime(this.tzNewDate())` | 仅无参调用，`parseTime(date)` 不处理 |
+| `dayjs()` | `this.$i18nNow()` | 仅无参调用，`dayjs(time)` 不处理 |
+
+**不处理的内容**：
+- `el-date-picker` 的其他 `type`（如 `date`、`daterange` 等）
+- `new Date("2024-01-01")`、`new Date(123)` 等带参数调用
+- `parseTime(date)`、`dayjs(time)` 等带参数调用
+- 已替换的代码不会重复替换（幂等性）
+
+**Mixin 方法**：`tzDateNow()`、`tzNewDate()`、`$i18nNow()` 由 `@kd/components` 组件库提供，无需在项目中额外定义。
+
+**请求头注入**：请求拦截器中已注入 `config.headers["X-Timezone"] = localStorage.getItem("i18n-tz")`，将用户时区传递给后端。
 
 ---
 

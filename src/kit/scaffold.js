@@ -104,14 +104,25 @@ function ensurePostcssConfig(projectRoot, options = {}) {
 
 /**
  * 在已有 postcss.config.js 中注入 postcss-rtlcss 插件配置
+ * 若已存在 postcss-rtlcss 配置块，先移除旧块再注入，避免重复 key
  * @param {string} content - 原始文件内容
  * @returns {string} 注入后的内容
  */
 function injectPostcssRtlcss(content) {
   const rtlcssConfig = '    "postcss-rtlcss": {\n      enabled: true,\n      autoRename: true,\n      ignoreImportant: true,\n      processRoot: true,\n      processKeyFrames: false,\n      processUrls: false,\n    },';
 
-  if (content.includes("plugins:")) {
-    return content.replace(/(plugins:\s*\{)/, "$1\n" + rtlcssConfig);
+  // 移除已存在的 postcss-rtlcss 配置块（支持单行和多行，含或不含引号的 key）
+  let cleaned = content.replace(
+    /,?\s*["']?postcss-rtlcss["']?\s*:\s*\{[^}]*\}\s*,?\n?/g,
+    "\n",
+  );
+  // 清理因移除产生的多余空行和逗号
+  cleaned = cleaned.replace(/,\s*\n\s*\n+/g, ",\n");
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+  cleaned = cleaned.replace(/\{\s*\n\s*\n+/g, "{\n");
+
+  if (cleaned.includes("plugins:")) {
+    return cleaned.replace(/(plugins:\s*\{)/, "$1\n" + rtlcssConfig);
   }
 
   return 'module.exports = {\n  plugins: {\n' + rtlcssConfig + "\n  },\n};\n";

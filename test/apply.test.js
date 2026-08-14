@@ -714,3 +714,199 @@ test("静态 style 的 left 属性转换为 right", () => {
   assert.ok(result.includes("'right'"), "left 应映射为 right");
   assert.ok(result.includes("'left'"), "LTR 分支应保留 left");
 });
+
+// ===== 国际化时区变换测试 =====
+
+test("el-date-picker type=datetime 替换为 kd-date-picker（配对标签）", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-date-picker v-model="val" type="datetime" placeholder="选择时间"></el-date-picker></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<kd-date-picker"), "应替换为 kd-date-picker");
+  assert.ok(result.includes("</kd-date-picker>"), "闭合标签也应替换");
+  assert.ok(!result.includes("<el-date-picker"), "不应残留 el-date-picker");
+});
+
+test("el-date-picker type=datetime 替换为 kd-date-picker（自闭合标签）", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-date-picker v-model="val" type="datetime" /></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<kd-date-picker"), "自闭合标签也应替换为 kd-date-picker");
+  assert.ok(!result.includes("<el-date-picker"), "不应残留 el-date-picker");
+});
+
+test("el-date-picker 非 datetime 类型不替换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-date-picker v-model="val" type="date" placeholder="选择日期"></el-date-picker></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<el-date-picker"), "type=date 不应替换");
+  assert.ok(!result.includes("<kd-date-picker"), "不应出现 kd-date-picker");
+});
+
+test("Date.now() 替换为 this.tzDateNow()", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>export default { methods: { getTime() { return Date.now(); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.tzDateNow()"), "Date.now() 应替换为 this.tzDateNow()");
+  assert.ok(!result.includes("Date.now()"), "不应残留 Date.now()");
+});
+
+test("new Date() 无参替换为 this.tzNewDate()", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>export default { methods: { getDate() { return new Date(); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.tzNewDate()"), "new Date() 应替换为 this.tzNewDate()");
+  assert.ok(!/\bnew\s+Date\(\)/.test(result), "不应残留 new Date()");
+});
+
+test("new Date 带参数不替换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>export default { methods: { getDate() { return new Date("2024-01-01"); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('new Date("2024-01-01")'), "带参数的 new Date 不应替换");
+});
+
+test("parseTime() 无参替换为 parseTime(this.tzNewDate())", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>export default { methods: { fmt() { return parseTime(); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("parseTime(this.tzNewDate())"), "parseTime() 应替换为 parseTime(this.tzNewDate())");
+});
+
+test("dayjs() 无参替换为 this.$i18nNow()", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>export default { methods: { now() { return dayjs(); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.$i18nNow()"), "dayjs() 应替换为 this.$i18nNow()");
+  assert.ok(!/\bdayjs\(\)/.test(result), "不应残留 dayjs()");
+});
+
+test("时区变换幂等性：重复执行不产生重复替换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>export default { methods: { run() { const a = Date.now(); const b = new Date(); const c = parseTime(); const d = dayjs(); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes("Date.now()"), "不应残留 Date.now()");
+  assert.ok(!result.includes("this.tzDateNow(this.tzDateNow"), "不应产生嵌套 tzDateNow");
+  assert.ok(!result.includes("this.tzNewDate(this.tzNewDate"), "不应产生嵌套 tzNewDate");
+  assert.ok(!result.includes("this.$i18nNow(this.$i18nNow"), "不应产生嵌套 $i18nNow");
+});
+
+test("独立 JS 文件中的时区变换", () => {
+  const projectRoot = createTempProject({
+    "src/utils.js": `export function getTime() { return Date.now(); }`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/utils.js"), "utf8");
+  assert.ok(result.includes("this.tzDateNow()"), "JS 文件中 Date.now() 也应替换");
+});
+
+test("HTML 注释原样保留不被清除", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><!-- 这是注释 --><div>实际内容</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<!-- 这是注释 -->"), "HTML 注释应原样保留");
+});
+
+test("含中文的 HTML 注释保留且不翻译", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><!-- <kd-column-text p-l="failureCount,失败数量"></kd-column-text> --><div>实际内容</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<!--"), "注释标记应保留");
+  assert.ok(result.includes("失败数量"), "注释中的中文应保留原文");
+  assert.ok(!result.includes("t('失败数量')"), "注释中的中文不应被翻译");
+});
+
+test("多个 HTML 注释均保留", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><!-- 注释一 --><div>内容</div><!-- 注释二 --></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<!-- 注释一 -->"), "第一个注释应保留");
+  assert.ok(result.includes("<!-- 注释二 -->"), "第二个注释应保留");
+});
+
+// ===== import { t } 注入策略修正测试 =====
+
+test("Vue 组件仅 this.t() 不注入 import { t }", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>{{ t('标题') }}</div></template><script>export default { methods: { show() { return this.t("操作成功"); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.t("), "普通 methods 中应使用 this.t()");
+  assert.ok(!result.includes('import { t }'), "仅 this.t() 的 Vue 组件不应注入 import");
+});
+
+test("Vue 组件 props default 有中文时注入 import { t }", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>export default { props: { title: { type: String, default: "用户" } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('t("用户")'), "props default 应使用 t()");
+  assert.ok(result.includes('import { t }'), "props default 有 t() 时应注入 import");
+});
+
+test("Vue 组件 beforeRouteEnter 有中文时注入 import { t }", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>export default { beforeRouteEnter(to, from, next) { to.meta.title = "首页"; next(); } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('t("首页")'), "beforeRouteEnter 应使用 t()");
+  assert.ok(result.includes('import { t }'), "beforeRouteEnter 有 t() 时应注入 import");
+});
+
+test("cleanup 移除 Vue 文件中不必要的 import { t }", () => {
+  const { cleanupI18n } = require("../src/kit/apply");
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>{{ t('标题') }}</div></template><script>import { t } from "@/languages";\nexport default { methods: { show() { return this.t("操作成功"); } } }</script>`,
+  });
+  cleanupI18n(projectRoot, CONFIG);
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes('import { t }'), "无独立 t() 的 Vue 文件应移除多余的 import");
+  assert.ok(result.includes("this.t("), "this.t() 调用应保留");
+});
+
+test("cleanup 保留 Vue 文件中必要的 import { t }（props default 有 t()）", () => {
+  const { cleanupI18n } = require("../src/kit/apply");
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>import { t } from "@/languages";\nexport default { props: { title: { type: String, default: t("用户") } }, methods: { show() { return this.t("操作成功"); } } }</script>`,
+  });
+  cleanupI18n(projectRoot, CONFIG);
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('import { t }'), "有独立 t() 调用的 Vue 文件应保留 import");
+});
+
+test("cleanup 保留独立 JS 文件的 import { t }", () => {
+  const { cleanupI18n } = require("../src/kit/apply");
+  const projectRoot = createTempProject({
+    "src/utils.js": `import { t } from "@/languages";\nexport function getTitle() { return t("首页"); }`,
+  });
+  cleanupI18n(projectRoot, CONFIG);
+  const result = fs.readFileSync(path.join(projectRoot, "src/utils.js"), "utf8");
+  assert.ok(result.includes('import { t }'), "独立 JS 文件应保留 import");
+});

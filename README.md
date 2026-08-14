@@ -411,8 +411,13 @@ kd-i18n run --max-steps 100
 | 独立 JS 中文字符串 | `"中文"` → `t("中文")` + `import { t }` |
 | 字符串拼接 | `"你好" + name` → `this.t("你好{}", name)` |
 | 模板字面量 | `` `你好${name}` `` → `this.t("你好{}", name)` |
+| el-date-picker type="datetime" | `<el-date-picker type="datetime">` → `<kd-date-picker type="datetime">` |
+| Date.now() | `Date.now()` → `this.tzDateNow()` |
+| new Date() | `new Date()` → `this.tzNewDate()`（仅无参，带参数不处理） |
+| parseTime() | `parseTime()` → `parseTime(this.tzNewDate())`（仅无参） |
+| dayjs() | `dayjs()` → `this.$i18nNow()`（仅无参） |
 
-不改写的内容：注释、console 调用、已包裹的 t() 调用、import/export 语句、对象属性 key、Directive。
+不改写的内容：注释、console 调用、已包裹的 t() 调用、import/export 语句、对象属性 key、Directive、`new Date("xxx")` 等带参数调用。
 
 ## validate 校验规则
 

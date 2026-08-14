@@ -218,3 +218,120 @@ test("isPlaceholderTranslation 检测多种语言的占位式翻译", () => {
   assert.strictEqual(isPlaceholderTranslation("Delete succeeded"), false);
   assert.strictEqual(isPlaceholderTranslation(""), false);
 });
+
+// ===== fixIdMapKeys 测试 =====
+
+const { fixIdMapKeys } = require("../src/kit/validate");
+
+function createIdMapProject(content) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i18n-idmap-"));
+  const idMapPath = path.join(dir, "src/languages/idMap.js");
+  fs.mkdirSync(path.dirname(idMapPath), { recursive: true });
+  fs.writeFileSync(idMapPath, content, "utf8");
+  return dir;
+}
+
+test("fixIdMapKeys 引号包裹未加引号的中文 key", () => {
+  const dir = createIdMapProject(
+    'export default {\n  只读: 1,\n  读写: 2,\n  "正常key": 3,\n};\n',
+  );
+  const result = fixIdMapKeys(dir);
+  const content = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  assert.ok(result.fixed, "应报告已修复");
+  assert.ok(content.includes('"只读"'), "只读 应被引号包裹");
+  assert.ok(content.includes('"读写"'), "读写 应被引号包裹");
+  assert.ok(content.includes('"正常key"'), "已加引号的 key 应保持不变");
+});
+
+test("fixIdMapKeys 保留原有换行结构", () => {
+  const dir = createIdMapProject(
+    'export default {\n  只读: 1,\n  读写: 2,\n  最大重连次数: 1033,\n};\n',
+  );
+  fixIdMapKeys(dir);
+  const content = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  // 每个 key 应在单独的行上（不被合并为一行）
+  assert.ok(content.includes('\n  "只读"'), "只读 应保留在独立行上");
+  assert.ok(content.includes('\n  "读写"'), "读写 应保留在独立行上");
+  assert.ok(content.includes('\n  "最大重连次数"'), "最大重连次数 应保留在独立行上");
+});
+
+test("fixIdMapKeys 保留 key 中合法的空格（不 trim）", () => {
+  const dir = createIdMapProject(
+    'export default {\n  "只读": 1,\n  "只读 ": 65,\n  "正常key": 3,\n};\n',
+  );
+  fixIdMapKeys(dir);
+  const content = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  // "只读" 和 "只读 " 是两个不同的 key，不应被合并
+  assert.ok(content.includes('"只读"'), "只读 应保持不变");
+  assert.ok(content.includes('"只读 "'), "只读 (带空格) 应保持不变，不被 trim");
+});
+
+test("fixIdMapKeys 保留值中间的空格", () => {
+  const dir = createIdMapProject(
+    'export default {\n  "含 空格的 正常key": 1,\n};\n',
+  );
+  fixIdMapKeys(dir);
+  const content = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  assert.ok(
+    content.includes('"含 空格的 正常key"'),
+    "值中间的空格应保留",
+  );
+});
+
+test("fixIdMapKeys 移除尾部分号和逗号", () => {
+  const dir = createIdMapProject(
+    'export default {\n  "key": 1,\n};\n',
+  );
+  fixIdMapKeys(dir);
+  const content = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  assert.ok(!content.match(/}\s*;/), "不应有尾部分号");
+});
+
+test("fixIdMapKeys 幂等：重复执行不产生变化", () => {
+  const dir = createIdMapProject(
+    'export default {\n  只读: 1,\n  "正常key": 2,\n};\n',
+  );
+  fixIdMapKeys(dir);
+  const afterFirst = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  const result = fixIdMapKeys(dir);
+  const afterSecond = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  assert.ok(!result.fixed, "第二次执行应报告未修复");
+  assert.strictEqual(afterFirst, afterSecond, "内容不应变化");
+});
+
+test("fixIdMapKeys 混合场景：未加引号 + 带空格 + 正常 key", () => {
+  const dir = createIdMapProject(
+    'export default {\n  只读: 1,\n  "读写 ": 2,\n  最大重连次数: 3,\n  "正常key": 4,\n  "含 空格的 key": 5,\n};\n',
+  );
+  fixIdMapKeys(dir);
+  const content = fs.readFileSync(
+    path.join(dir, "src/languages/idMap.js"),
+    "utf8",
+  );
+  assert.ok(content.includes('"只读"'), "未加引号的 key 应被包裹");
+  assert.ok(content.includes('"读写 "'), "带尾随空格的 key 应保持不变（不 trim）");
+  assert.ok(content.includes('"最大重连次数"'), "另一个未加引号的 key 应被包裹");
+  assert.ok(content.includes('"正常key"'), "正常 key 应保持不变");
+  assert.ok(content.includes('"含 空格的 key"'), "中间空格应保留");
+});

@@ -121,15 +121,25 @@ function transformFile(source, filePath, relativePath, preset, config) {
   if (extension === ".vue") {
     return transformVueFile(source, preset, config);
   }
-  if (extension === ".js") {
-    return transformJsFile(source, {
-      vueComponent: false,
-      relativePath,
-      preset,
-      config,
-    });
-  }
-  return { changed: false, replacements: 0, code: source };
+ if (extension === ".js") {
+   const result = transformJsFile(source, {
+     vueComponent: false,
+     relativePath,
+     preset,
+     config,
+   });
+   // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
+   const tzResult = transformTimezoneJs(result.code);
+   if (tzResult.changed) {
+     return {
+       changed: true,
+       replacements: result.replacements + tzResult.replacements,
+       code: tzResult.code,
+     };
+   }
+   return result;
+ }
+ return { changed: false, replacements: 0, code: source };
 }
 
 /**
@@ -195,17 +205,25 @@ function transformVueFile(source, preset, config) {
             sfc.script.end,
           )
         : null;
-    if (scriptContent) {
-      const rtlResult = transformRtlJsAssignments(scriptContent);
-      if (rtlResult.changed) {
-        changed = true;
-        replacements += rtlResult.replacements;
-        code = code.replace(scriptContent, rtlResult.code);
-      }
+   if (scriptContent) {
+    const rtlResult = transformRtlJsAssignments(scriptContent);
+    if (rtlResult.changed) {
+      changed = true;
+      replacements += rtlResult.replacements;
+      code = code.replace(scriptContent, rtlResult.code);
+    }
+    // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
+    const currentScript = rtlResult.changed ? rtlResult.code : scriptContent;
+    const tzResult = transformTimezoneJs(currentScript);
+    if (tzResult.changed) {
+      changed = true;
+      replacements += tzResult.replacements;
+      code = code.replace(currentScript, tzResult.code);
     }
   }
+}
 
-  // isRtl inject 自动注入：如果文件中使用了 isRtl 但缺少 inject 声明
+ // isRtl inject 自动注入：如果文件中使用了 isRtl 但缺少 inject 声明
   const injectResult = ensureIsRtlInject(code);
   if (injectResult.changed) {
     changed = true;
@@ -261,6 +279,14 @@ function transformVueFileFallback(source, preset, config) {
     code = rtlResult.code;
   }
 
+  // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
+  const tzResult = transformTimezoneJs(code);
+  if (tzResult.changed) {
+    changed = true;
+    replacements += tzResult.replacements;
+    code = tzResult.code;
+  }
+
   // isRtl inject 自动注入
   const injectResult = ensureIsRtlInject(code);
   if (injectResult.changed) {
@@ -282,10 +308,14 @@ function transformTemplate(source, preset, config) {
   let code = source;
   let replacements = 0;
 
-  // 先去除 HTML 注释，避免注释中的中文被误处理（保留占位以维持行号）
-  code = code.replace(/<!--[\s\S]*?-->/g, (match) =>
-    match.replace(/[^\n]/g, " "),
-  );
+  // 临时遮蔽 HTML 注释，避免注释中的中文被误处理，变换完成后原样恢复
+  // 使用 null 字节占位符确保不会被任何正则匹配误伤
+  const commentPlaceholders = [];
+  code = code.replace(/<!--[\s\S]*?-->/g, (match) => {
+    const placeholder = `\x00CMT${commentPlaceholders.length}\x00`;
+    commentPlaceholders.push(match);
+    return placeholder;
+  });
 
   const specialComponents = (preset && preset.rules.specialComponents) || [];
   const configuredAttributes =
@@ -409,11 +439,25 @@ function transformTemplate(source, preset, config) {
     code = labelWidthResult.code;
   }
 
+  // el-date-picker type="datetime" → kd-date-picker（国际化时区组件替换）
+  const datePickerResult = transformDatePickerComponent(code);
+  if (datePickerResult.changed) {
+    replacements += datePickerResult.replacements;
+    code = datePickerResult.code;
+  }
+
   const cleanedCode = unwrapNestedTranslateCalls(code);
+
+  // 恢复被遮蔽的 HTML 注释（原样还原，不做任何修改）
+  let finalCode = cleanedCode;
+  commentPlaceholders.forEach((comment, i) => {
+    finalCode = finalCode.replace(`\x00CMT${i}\x00`, comment);
+  });
+
   return {
-    changed: replacements > 0 || cleanedCode !== code,
+    changed: replacements > 0 || finalCode !== source,
     replacements,
-    code: cleanedCode,
+    code: finalCode,
   };
 }
 
@@ -790,6 +834,89 @@ function transformLabelWidthToAuto(code) {
       return 'label-width="auto"';
     },
   );
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 将 el-date-picker type="datetime" 替换为 kd-date-picker（国际化时区组件）
+ * 仅替换 type="datetime" 的组件，其他 type 不处理
+ * 支持自闭合标签和配对标签（含闭合标签）
+ * @param {string} code - template 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformDatePickerComponent(code) {
+  let replacements = 0;
+  let result = code;
+
+  // 匹配配对标签：<el-date-picker ... type="datetime" ...>...</el-date-picker>
+  result = result.replace(
+    /<el-date-picker\b([^>]*?)>([\s\S]*?)<\/el-date-picker>/g,
+    (match, attrs, content) => {
+      if (!/type=["']datetime["']/.test(attrs)) return match;
+      replacements += 1;
+      return `<kd-date-picker${attrs}>${content}</kd-date-picker>`;
+    },
+  );
+
+  // 匹配自闭合标签：<el-date-picker ... type="datetime" ... />
+  result = result.replace(
+    /<el-date-picker\b([^>]*?)\/>/g,
+    (match, attrs) => {
+      if (!/type=["']datetime["']/.test(attrs)) return match;
+      replacements += 1;
+      return `<kd-date-picker${attrs}/>`;
+    },
+  );
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 国际化时区 JS 代码变换：
+ * - Date.now() → this.tzDateNow()
+ * - new Date() → this.tzNewDate()（仅无参调用，new Date("xxx") 不处理）
+ * - parseTime() → parseTime(this.tzNewDate())（仅无参调用）
+ * - dayjs() → this.$i18nNow()（仅无参调用）
+ * 以上替换均为幂等：已替换的不会再被匹配
+ * @param {string} code - JS 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformTimezoneJs(code) {
+  let replacements = 0;
+  let result = code;
+
+  // Date.now() → this.tzDateNow()
+  result = result.replace(/\bDate\.now\(\)/g, () => {
+    replacements += 1;
+    return "this.tzDateNow()";
+  });
+
+  // new Date() → this.tzNewDate()（仅无参）
+  result = result.replace(/\bnew\s+Date\(\)/g, () => {
+    replacements += 1;
+    return "this.tzNewDate()";
+  });
+
+  // parseTime() → parseTime(this.tzNewDate())（仅无参）
+  result = result.replace(/\bparseTime\(\)/g, () => {
+    replacements += 1;
+    return "parseTime(this.tzNewDate())";
+  });
+
+  // dayjs() → this.$i18nNow()（仅无参）
+  result = result.replace(/\bdayjs\(\)/g, () => {
+    replacements += 1;
+    return "this.$i18nNow()";
+  });
 
   return {
     changed: replacements > 0,
@@ -1621,7 +1748,8 @@ function needsTranslateImport(source) {
   // 检查是否已有 import { t } from "@/languages"
   const tImportRegex = /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?/;
   if (tImportRegex.test(source)) return false;
-  return /\bt\(/.test(source);
+  // 仅匹配独立的 t() 调用，不匹配 this.t()（后者由 i18nPlugin 实例方法提供，无需 import）
+  return /(?<!this\.)\bt\(/.test(source);
 }
 
 /**
@@ -1722,9 +1850,30 @@ function buildChangePreview(beforeCode, afterCode) {
 }
 
 /**
+/**
+ * 从 Vue SFC 源码中提取 <script> 区域内容
+ * @param {string} source - Vue 文件完整源码
+ * @returns {string|null} script 内容，无 script 时返回 null
+ */
+function extractScriptContent(source) {
+  let sfc;
+  try {
+    sfc = parseComponent(source);
+  } catch {
+    const match = source.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+    return match ? match[1] : null;
+  }
+  if (!sfc.script || !sfc.script.content) return null;
+  return sfc.script.start != null && sfc.script.end != null
+    ? source.slice(sfc.script.start, sfc.script.end)
+    : sfc.script.content;
+}
+
+/**
  * 清理已国际化代码中的常见问题，用于重复 run 时的自动修复
  * - 展开嵌套的 t(t('...')) 为单层 t('...')
  * - 移除重复的 import { t } from "@/languages" 语句
+ * - 移除 Vue 文件中不必要的 import（script 无独立 t() 调用时）
  * - 修复多余的空格和格式问题（通过 eslint --fix）
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} config - i18n 配置
@@ -1759,24 +1908,40 @@ function cleanupI18n(projectRoot, config) {
     code = unwrapNestedTranslateCalls(code);
     if (code !== beforeUnwrap) fixCount += 1;
 
-    // 2. 移除重复的 import { t } from "@/languages" 语句
-    const importRegex =
-      /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/g;
-    const importMatches = code.match(importRegex);
-    if (importMatches && importMatches.length > 1) {
-      // 保留第一个，移除其余
-      let firstKept = false;
-      code = code.replace(importRegex, (match) => {
-        if (!firstKept) {
-          firstKept = true;
-          return match;
-        }
-        return "";
-      });
-      fixCount += importMatches.length - 1;
-    }
+   // 2. 移除重复的 import { t } from "@/languages" 语句
+   const importRegex =
+     /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/g;
+   const importMatches = code.match(importRegex);
+   if (importMatches && importMatches.length > 1) {
+     // 保留第一个，移除其余
+     let firstKept = false;
+     code = code.replace(importRegex, (match) => {
+       if (!firstKept) {
+         firstKept = true;
+         return match;
+       }
+       return "";
+     });
+     fixCount += importMatches.length - 1;
+   }
 
-    if (fixCount > 0) {
+   // 2.5 移除 Vue 文件中不必要的 import { t } from "@/languages"
+   // Vue 文件 template 中的 t() 由 voerkai18n-loader autoImport 处理，
+   // script 中的 this.t() 由 i18nPlugin 实例方法提供
+   // 仅当 script 区域存在独立的 t() 调用（非 this.t()）时才需要 import
+   if (ext === ".vue") {
+     const scriptContent = extractScriptContent(code);
+     const hasStandaloneT =
+       scriptContent && /(?<!this\.)\bt\(/.test(scriptContent);
+     const importCheckRegex =
+       /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/;
+     if (!hasStandaloneT && importCheckRegex.test(code)) {
+       code = code.replace(importCheckRegex, "").replace(/\n{3,}/g, "\n\n");
+       fixCount += 1;
+     }
+   }
+
+   if (fixCount > 0) {
       fs.writeFileSync(filePath, code, "utf8");
       cleanedFiles.push({ file: relativePath, fixCount });
     }

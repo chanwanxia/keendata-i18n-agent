@@ -147,18 +147,35 @@ const preset = {
       reloadOnLanguageChange: true,
       logicalCssHelpers: ["margin-inline-start", "margin-inline-end", "overflow-wrap", "word-break"],
     },
-    network: {
-      file: "src/utils/interceptors-utils.js",
-      acceptLanguageHeader: "Accept-Language",
-      timezoneHeader: "X-Timezone",
-      headerLanguageMap: {
-        zh: "zh-CN",
-        en: "en-US",
-        jp: "ja-JP",
-        ar: "ar",
-      },
-    },
-    widthAdaptation: {
+   network: {
+     file: "src/utils/interceptors-utils.js",
+     acceptLanguageHeader: "Accept-Language",
+     timezoneHeader: "X-Timezone",
+     headerLanguageMap: {
+       zh: "zh-CN",
+       en: "en-US",
+       jp: "ja-JP",
+       ar: "ar",
+     },
+   },
+   timezone: {
+     storageKey: "i18n-tz",
+     mixinFile: "src/languages/i18n-plugin/i18nMixin.js",
+     componentReplacements: [
+       {
+         from: "el-date-picker",
+         to: "kd-date-picker",
+         condition: 'type="datetime"',
+       },
+     ],
+     codeReplacements: [
+       { from: "Date.now()", to: "this.tzDateNow()" },
+       { from: "new Date()", to: "this.tzNewDate()" },
+       { from: "parseTime()", to: "parseTime(this.tzNewDate())" },
+       { from: "dayjs()", to: "this.$i18nNow()" },
+     ],
+   },
+   widthAdaptation: {
       file: "src/mixins/i18n-width-mixin.js",
       helper: "getI18nWidth",
       languageOrder: ["zh", "en", "jp", "ar"],
