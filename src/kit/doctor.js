@@ -44,6 +44,8 @@ function inspectProjectSetup(projectRoot, profile, config) {
   );
 checks.push(checkFileExists(projectRoot, rtlRules.styleFile, "rtl-style", "RTL 样式文件"));
 checks.push(checkFileContains(projectRoot, widthRules.file, /getI18nWidth/, "width-adaptation", "宽度适配 helper"));
+const displayNameRules = preset.rules.displayName || {};
+checks.push(checkFileContains(projectRoot, displayNameRules.mixinFile, /displayNameLabel/, "display-name", "中文名称接入 helper"));
 checks.push(
   checkAcceptLanguage(projectRoot, networkRules),
 );
@@ -72,7 +74,7 @@ function checkMainBootstrap(projectRoot, bootstrapRules) {
   const filePath = path.join(projectRoot, mainFile || "");
   if (!mainFile || !fs.existsSync(filePath)) {
     return createCheck("bootstrap-main", "fail", `缺少入口文件 ${mainFile || "src/main.js"}`, {
-      suggestion: "补齐入口文件，并注入 i18n plugin、scope、width mixin 与样式导入",
+      suggestion: "补齐入口文件，并注入 i18n plugin、scope、mixin 与样式导入",
     });
   }
 
@@ -81,20 +83,20 @@ function checkMainBootstrap(projectRoot, bootstrapRules) {
 
   if (bootstrapRules.scopeImport && !content.includes(bootstrapRules.scopeImport)) missing.push(`import ${bootstrapRules.scopeImport}`);
   if (bootstrapRules.pluginPackage && !content.includes(bootstrapRules.pluginPackage)) missing.push(`import ${bootstrapRules.pluginPackage}`);
-  if (bootstrapRules.widthMixinImport && !content.includes(bootstrapRules.widthMixinImport)) {
-    missing.push(`import ${bootstrapRules.widthMixinImport}`);
+  if (bootstrapRules.mixinImport && !content.includes(bootstrapRules.mixinImport)) {
+    missing.push(`import ${bootstrapRules.mixinImport}`);
   }
   if (bootstrapRules.pluginSymbol && !content.includes(`Vue.use(${bootstrapRules.pluginSymbol}`)) {
     missing.push(`Vue.use(${bootstrapRules.pluginSymbol}, { ${bootstrapRules.scopeSymbol} })`);
   }
-  if (bootstrapRules.widthMixinSymbol && !content.includes(`Vue.mixin(${bootstrapRules.widthMixinSymbol})`)) {
-    missing.push(`Vue.mixin(${bootstrapRules.widthMixinSymbol})`);
+  if (bootstrapRules.mixinSymbol && !content.includes(`Vue.mixin(${bootstrapRules.mixinSymbol})`)) {
+    missing.push(`Vue.mixin(${bootstrapRules.mixinSymbol})`);
   }
 
   if (missing.length > 0) {
     return createCheck("bootstrap-main", "fail", "入口文件缺少部分 i18n 基建", {
       missing,
-      suggestion: "按 preset 规则补齐 Vue.use(i18nPlugin)、Vue.mixin(i18nWidthMixin) 和相关 import",
+      suggestion: "按 preset 规则补齐 Vue.use(i18nPlugin)、Vue.mixin(i18nMixin) 和相关 import",
     });
   }
 
@@ -467,7 +469,7 @@ function checkKdComponentsVersion(projectRoot) {
 }
 
 /**
- * 检查 layout-header 组件是否注入了语言切换器（i18nMixin + kd-select）
+ * 检查 layout-header 组件是否注入了语言切换器（kd-select + @change="languageChange"）
  * @param {string} projectRoot - 项目根路径
  * @returns {object} 检查结果
  */
@@ -488,16 +490,17 @@ function checkLayoutHeaderLanguageSwitcher(projectRoot) {
     headerPath = found;
   }
 
-  const content = fs.readFileSync(headerPath, "utf8");
-  const hasMixin = content.includes("i18nMixin");
-  const hasSwitcher = content.includes("activeLanguage") || content.includes("changeLanguage");
+ const content = fs.readFileSync(headerPath, "utf8");
+  // i18nMixin 已全局引入，layout-header 无需单独声明；检查语言切换器和 @change="languageChange"
+  const hasSwitcher = content.includes("activeLanguage");
+  const hasLanguageChange = content.includes("languageChange");
 
-  if (hasMixin && hasSwitcher) {
+  if (hasSwitcher && hasLanguageChange) {
     return createCheck("layout-header-language", "pass", "layout-header 已注入语言切换器");
-  }
-  return createCheck("layout-header-language", "fail", "layout-header 缺少语言切换器或 i18nMixin", {
-    suggestion: "执行 inject 或手动注入 i18nMixin 和 kd-select 语言切换器",
-  });
+ }
+  return createCheck("layout-header-language", "fail", "layout-header 缺少语言切换器或 @change=\"languageChange\"", {
+    suggestion: "执行 inject 注入 kd-select 语言切换器（@change=\"languageChange\"）",
+ });
 }
 
 /**

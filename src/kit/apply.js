@@ -8,6 +8,7 @@ const { parseComponent } = require("@vue/compiler-sfc");
 const { collectTargetFiles, toRelative } = require("./files");
 const { getPresetById } = require("./presets");
 const { runEslintFix } = require("./eslint");
+const { transformDisplayName, isDisplayNameLabelCallee } = require("./display-name");
 
 const DEFAULT_TEMPLATE_ATTRIBUTES = [
   "placeholder",
@@ -121,25 +122,25 @@ function transformFile(source, filePath, relativePath, preset, config) {
   if (extension === ".vue") {
     return transformVueFile(source, preset, config);
   }
- if (extension === ".js") {
-   const result = transformJsFile(source, {
-     vueComponent: false,
-     relativePath,
-     preset,
-     config,
-   });
-   // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
-   const tzResult = transformTimezoneJs(result.code);
-   if (tzResult.changed) {
-     return {
-       changed: true,
-       replacements: result.replacements + tzResult.replacements,
-       code: tzResult.code,
-     };
-   }
-   return result;
- }
- return { changed: false, replacements: 0, code: source };
+  if (extension === ".js") {
+    const result = transformJsFile(source, {
+      vueComponent: false,
+      relativePath,
+      preset,
+      config,
+    });
+    // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
+    const tzResult = transformTimezoneJs(result.code);
+    if (tzResult.changed) {
+      return {
+        changed: true,
+        replacements: result.replacements + tzResult.replacements,
+        code: tzResult.code,
+      };
+    }
+    return result;
+  }
+  return { changed: false, replacements: 0, code: source };
 }
 
 /**
@@ -178,56 +179,68 @@ function transformVueFile(source, preset, config) {
     }
   }
 
- if (sfc.script && sfc.script.content) {
-   // 同样使用 start/end 位置提取真实 script 内容
-   const scriptContent =
-     sfc.script.start != null && sfc.script.end != null
-       ? source.slice(sfc.script.start, sfc.script.end)
-       : sfc.script.content;
-   const transformed = transformJsFile(scriptContent, {
-     vueComponent: true,
-     preset,
-     config,
-   });
-   if (transformed.changed) {
-     changed = true;
-     replacements += transformed.replacements;
-     code = code.replace(scriptContent, transformed.code);
-   }
- }
+  if (sfc.script && sfc.script.content) {
+    // 同样使用 start/end 位置提取真实 script 内容
+    const scriptContent =
+      sfc.script.start != null && sfc.script.end != null
+        ? source.slice(sfc.script.start, sfc.script.end)
+        : sfc.script.content;
+    const transformed = transformJsFile(scriptContent, {
+      vueComponent: true,
+      preset,
+      config,
+    });
+    if (transformed.changed) {
+      changed = true;
+      replacements += transformed.replacements;
+      code = code.replace(scriptContent, transformed.code);
+    }
+  }
+
+  // "中文名称"接入变换：检测 t('中文名称')/t('显示名称')/t('中文名') 并转换为 displayNameLabel/displayNameConfig
+  const displayNameResult = transformDisplayName(code, sfc);
+  if (displayNameResult.changed) {
+    changed = true;
+    replacements += displayNameResult.replacements;
+    code = displayNameResult.code;
+  }
 
   // JS 级别方向性赋值转换（如 style.cssFloat = "left" -> this.isRtl ? "right" : "left"）
   if (sfc.script && sfc.script.content) {
     const scriptContent =
       sfc.script.start != null && sfc.script.end != null
-        ? code.slice(
-            sfc.script.start,
-            sfc.script.end,
-          )
+        ? code.slice(sfc.script.start, sfc.script.end)
         : null;
-   if (scriptContent) {
-    const rtlResult = transformRtlJsAssignments(scriptContent);
-    if (rtlResult.changed) {
-      changed = true;
-      replacements += rtlResult.replacements;
-      code = code.replace(scriptContent, rtlResult.code);
-    }
-    // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
-    const currentScript = rtlResult.changed ? rtlResult.code : scriptContent;
-    const tzResult = transformTimezoneJs(currentScript);
-    if (tzResult.changed) {
-      changed = true;
-      replacements += tzResult.replacements;
-      code = code.replace(currentScript, tzResult.code);
+    if (scriptContent) {
+      const rtlResult = transformRtlJsAssignments(scriptContent);
+      if (rtlResult.changed) {
+        changed = true;
+        replacements += rtlResult.replacements;
+        code = code.replace(scriptContent, rtlResult.code);
+      }
+      // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
+      const currentScript = rtlResult.changed ? rtlResult.code : scriptContent;
+      const tzResult = transformTimezoneJs(currentScript);
+      if (tzResult.changed) {
+        changed = true;
+        replacements += tzResult.replacements;
+        code = code.replace(currentScript, tzResult.code);
+      }
     }
   }
-}
 
- // isRtl inject 自动注入：如果文件中使用了 isRtl 但缺少 inject 声明
-  const injectResult = ensureIsRtlInject(code);
+  // 清理旧版 inject/mixins/import（i18nMixin 已全局引入，无需单文件声明）
+  const injectResult = cleanupLegacyInjects(code);
   if (injectResult.changed) {
     changed = true;
     code = injectResult.code;
+  }
+
+  // 还原 LLM write_file 可能引入的 \uXXXX 转义序列为实际中文字符
+  const beforeDeescape = code;
+  code = deescapeUnicode(code);
+  if (code !== beforeDeescape) {
+    changed = true;
   }
 
   return { changed, replacements, code };
@@ -287,8 +300,8 @@ function transformVueFileFallback(source, preset, config) {
     code = tzResult.code;
   }
 
-  // isRtl inject 自动注入
-  const injectResult = ensureIsRtlInject(code);
+  // 清理旧版 inject/mixins/import（i18nMixin 已全局引入，无需单文件声明）
+  const injectResult = cleanupLegacyInjects(code);
   if (injectResult.changed) {
     changed = true;
     code = injectResult.code;
@@ -393,20 +406,19 @@ function transformTemplate(source, preset, config) {
   code = code.replace(
     /(?<!=)>([^<]*[\u3400-\u9fff][^<{}]*)</g,
     (match, rawText) => {
-   if (!rawText.trim()) return match;
-   if (rawText.includes("{{") || rawText.includes("}}")) return match;
-   // 跳过跨越属性边界的匹配：rawText 中包含 " 说明匹配了属性值中的 > 比较运算符
-   if (rawText.includes('"')) return match;
-   // 幂等性检查：已包含 t() 调用的文本不再重复包裹
-  if (/\bt\s*\(/.test(rawText)) return match;
-   replacements += 1;
-     const trimmed = rawText.trim();
-     const leading = rawText.match(/^\s*/)[0];
-     const trailing = rawText.match(/\s*$/)[0];
-     return `>${leading}{{ ${buildTranslateCallSource("t", trimmed)} }}${trailing}<`;
-   },
- );
-
+      if (!rawText.trim()) return match;
+      if (rawText.includes("{{") || rawText.includes("}}")) return match;
+      // 跳过跨越属性边界的匹配：rawText 中包含 " 说明匹配了属性值中的 > 比较运算符
+      if (rawText.includes('"')) return match;
+      // 幂等性检查：已包含 t() 调用的文本不再重复包裹
+      if (/\bt\s*\(/.test(rawText)) return match;
+      replacements += 1;
+      const trimmed = rawText.trim();
+      const leading = rawText.match(/^\s*/)[0];
+      const trailing = rawText.match(/\s*$/)[0];
+      return `>${leading}{{ ${buildTranslateCallSource("t", trimmed)} }}${trailing}<`;
+    },
+  );
   // .meta.title 表达式自动 t() 包裹
   // 匹配 mustache 中的 <identifier>.meta.title 或 <identifier>.title（当 identifier 含 meta/Path 关键字时）
   // 已在 t() 内的跳过
@@ -750,35 +762,65 @@ function splitByTopLevelCommas(str) {
 }
 
 /**
- * 检测 Vue 文件中是否使用了 isRtl 但缺少 inject 声明，自动注入 inject: ["isRtl"]
- * isRtl 由 i18nMixin 的 provide() 向子组件提供，使用前需 inject
+ * 将源码中的 \uXXXX Unicode 转义序列还原为实际字符
+ * LLM agent 通过 write_file 写入文件时，可能将中文字符输出为 \uXXXX 转义序列，
+ * 此函数将其还原为实际中文字符，保持源码可读性
+ * @param {string} code - 源码
+ * @returns {string} 还原后的源码
+ */
+function deescapeUnicode(code) {
+  // 将字符串字面量中的 \uXXXX 转义还原为实际字符，但跳过正则表达式字面量
+  // 正则中的 \u4e00 等是正则语法，还原为实际字符会改变其含义
+  // 策略：按正则字面量 /.../ 分段，只处理非正则部分
+  const parts = code.split(/(\/[^/\n]+\/[gimsuy]*)/);
+  return parts
+    .map((part, i) => {
+      // 奇数索引为正则字面量，跳过
+      if (i % 2 === 1) return part;
+      return part.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16)),
+      );
+    })
+    .join("");
+}
+
+/**
+ * 清理旧版注入残留：inject: ["isRtl"]、import i18nMixin from i18n-plugin、mixins: [i18nMixin()]
+ * i18nMixin 已在 main.js 中通过 Vue.mixin 全局引入，isRtl 作为计算属性全局可用，
+ * 单文件无需 inject、import 或 mixins 声明
  * @param {string} code - Vue 文件完整源码
  * @returns {object} 变换结果 { changed, code }
  */
-function ensureIsRtlInject(code) {
-  // 检测是否使用了 isRtl（在 template 或 script 中）
-  const hasIsRtlUsage = /\bisRtl\b/.test(code);
-  if (!hasIsRtlUsage) return { changed: false, code };
-
-  // 检测是否已有 inject 声明 isRtl
-  const hasIsRtlInject = /inject\s*:\s*\[?[^\]]*isRtl/.test(code);
-  if (hasIsRtlInject) return { changed: false, code };
-
-  // 在 script 的 export default { 中注入 inject: ["isRtl"]
+function cleanupLegacyInjects(code) {
   let result = code;
-  if (result.includes("inject:")) {
-    // 已有 inject 数组，追加 isRtl
-    result = result.replace(/(inject\s*:\s*\[)/, '$1"isRtl", ');
-  } else if (result.includes("mixins:")) {
-    // 有 mixins 但没 inject，在 mixins 前注入
-    result = result.replace(/(export\s+default\s*\{)/, '$1\n  inject: ["isRtl"],');
-  } else {
-    // 直接在 export default { 后注入
-    result = result.replace(/(export\s+default\s*\{)/, '$1\n  inject: ["isRtl"],');
+  let changed = false;
+
+  // 移除旧版 import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin"
+  const oldImportPattern = /import\s*\{\s*i18nMixin\s*\}\s*from\s*["']@\/languages\/i18n-plugin\/i18nMixin["'];?\n?/;
+  if (oldImportPattern.test(result)) {
+    result = result.replace(oldImportPattern, "");
+    changed = true;
   }
 
-  // 如果替换没有实际改变代码（如没有 export default {），不算 changed
-  return { changed: result !== code, code: result };
+  // 移除 mixins 数组中的 i18nMixin()
+  if (/mixins:\s*\[\s*i18nMixin\(\)\s*,?\s*\]/.test(result)) {
+    result = result.replace(/\n\s*mixins:\s*\[\s*i18nMixin\(\)\s*,?\s*\],?/g, "");
+    changed = true;
+  } else if (/mixins:\s*\[/.test(result) && /i18nMixin\(\)/.test(result)) {
+    result = result.replace(/,?\s*i18nMixin\(\)/g, "");
+    result = result.replace(/mixins:\s*\[\s*,/, "mixins: [");
+    changed = true;
+  }
+
+  // 移除 inject 中的 "isRtl"
+  if (/inject\s*:\s*\[/.test(result) && /"isRtl"/.test(result)) {
+    result = result.replace(/,?\s*"isRtl"/g, "");
+    // inject 数组变空时移除整行
+    result = result.replace(/\n\s*inject\s*:\s*\[\s*\],?/g, "");
+    changed = true;
+  }
+
+  return { changed, code: result };
 }
 
 /**
@@ -1621,7 +1663,8 @@ function shouldTransformStringLiteral(pathRef) {
     (parentPath) =>
       parentPath.isCallExpression() &&
       (isTranslateCallee(parentPath.node.callee) ||
-        isConsoleCallee(parentPath.node.callee)),
+        isConsoleCallee(parentPath.node.callee) ||
+        isDisplayNameLabelCallee(parentPath.node.callee)),
   );
 }
 
@@ -1647,7 +1690,8 @@ function shouldTransformInlineStringLiteral(pathRef) {
     (parentPath) =>
       parentPath.isCallExpression() &&
       (isTranslateCallee(parentPath.node.callee) ||
-        isConsoleCallee(parentPath.node.callee)),
+        isConsoleCallee(parentPath.node.callee) ||
+        isDisplayNameLabelCallee(parentPath.node.callee)),
   );
 }
 
@@ -1759,7 +1803,19 @@ function needsTranslateImport(source) {
  * @returns {boolean} 是否跳过
  */
 function shouldSkipFile(relativePath, config) {
-  return (config.excludeFiles || []).includes(relativePath);
+  // scaffold 生成的基础设施文件不应被 apply 处理，
+  // 否则其中的中文常量（如 chLabel: "中文名称"）会被错误包裹为 t()
+  const infrastructureFiles = [
+    "src/mixins/i18n-mixin.js",
+    "src/utils/i18n.js",
+    "src/utils/elementui-utils.js",
+    "src/styles/i18n-style.scss",
+    "postcss.config.js",
+  ];
+  return (
+    (config.excludeFiles || []).includes(relativePath) ||
+    infrastructureFiles.includes(relativePath)
+  );
 }
 
 /**
@@ -1908,40 +1964,40 @@ function cleanupI18n(projectRoot, config) {
     code = unwrapNestedTranslateCalls(code);
     if (code !== beforeUnwrap) fixCount += 1;
 
-   // 2. 移除重复的 import { t } from "@/languages" 语句
-   const importRegex =
-     /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/g;
-   const importMatches = code.match(importRegex);
-   if (importMatches && importMatches.length > 1) {
-     // 保留第一个，移除其余
-     let firstKept = false;
-     code = code.replace(importRegex, (match) => {
-       if (!firstKept) {
-         firstKept = true;
-         return match;
-       }
-       return "";
-     });
-     fixCount += importMatches.length - 1;
-   }
+    // 2. 移除重复的 import { t } from "@/languages" 语句
+    const importRegex =
+      /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/g;
+    const importMatches = code.match(importRegex);
+    if (importMatches && importMatches.length > 1) {
+      // 保留第一个，移除其余
+      let firstKept = false;
+      code = code.replace(importRegex, (match) => {
+        if (!firstKept) {
+          firstKept = true;
+          return match;
+        }
+        return "";
+      });
+      fixCount += importMatches.length - 1;
+    }
 
-   // 2.5 移除 Vue 文件中不必要的 import { t } from "@/languages"
-   // Vue 文件 template 中的 t() 由 voerkai18n-loader autoImport 处理，
-   // script 中的 this.t() 由 i18nPlugin 实例方法提供
-   // 仅当 script 区域存在独立的 t() 调用（非 this.t()）时才需要 import
-   if (ext === ".vue") {
-     const scriptContent = extractScriptContent(code);
-     const hasStandaloneT =
-       scriptContent && /(?<!this\.)\bt\(/.test(scriptContent);
-     const importCheckRegex =
-       /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/;
-     if (!hasStandaloneT && importCheckRegex.test(code)) {
-       code = code.replace(importCheckRegex, "").replace(/\n{3,}/g, "\n\n");
-       fixCount += 1;
-     }
-   }
+    // 2.5 移除 Vue 文件中不必要的 import { t } from "@/languages"
+    // Vue 文件 template 中的 t() 由 voerkai18n-loader autoImport 处理，
+    // script 中的 this.t() 由 i18nPlugin 实例方法提供
+    // 仅当 script 区域存在独立的 t() 调用（非 this.t()）时才需要 import
+    if (ext === ".vue") {
+      const scriptContent = extractScriptContent(code);
+      const hasStandaloneT =
+        scriptContent && /(?<!this\.)\bt\(/.test(scriptContent);
+      const importCheckRegex =
+        /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/;
+      if (!hasStandaloneT && importCheckRegex.test(code)) {
+        code = code.replace(importCheckRegex, "").replace(/\n{3,}/g, "\n\n");
+        fixCount += 1;
+      }
+    }
 
-   if (fixCount > 0) {
+    if (fixCount > 0) {
       fs.writeFileSync(filePath, code, "utf8");
       cleanedFiles.push({ file: relativePath, fixCount });
     }
@@ -1964,13 +2020,6 @@ function cleanupI18n(projectRoot, config) {
     cleanedFiles,
   };
 }
-/**
- * 修复 beforeRouteEnter 和 props default 上下文中错误使用 this.t() 的问题
- * 将这些上下文中的 this.t() 转换为 t()，并注入 import { t } from "@/languages"
- * 用于 cleanupI18n 在重复 run 时自动修复历史遗留的错误 this.t 调用
- * @param {string} source - 脚本源码
- * @returns {object} { changed, code, fixCount }
- */
 function fixNoThisTranslateCalls(source) {
   // 快速检测：不含 this.t 则无需处理
   if (!/this\s*\.\s*t\s*\(/.test(source)) {
@@ -2063,4 +2112,5 @@ function fixNoThisTranslateCallsInVue(source) {
 module.exports = {
   applyI18n,
   cleanupI18n,
+  deescapeUnicode,
 };

@@ -6,10 +6,10 @@
  */
 const { OpenAI } = require("openai");
 
-const apiKey = "sk-2763191ca13d56df5ded7e82dd4b44e29318bda8a5cde29d94b04c31fafc41b9";
+const apiKey = "sk-a6778cf4b0b3d68418d7a335a470846feefd922c356a9ab986873daf572c8b79";
 const baseUrl =
   process.env.LLM_BASE_URL || "http://router.keendata.net:5343/v1";
-const model = process.env.LLM_MODEL || "gpt-5.5";
+const model = "gpt-5.5";
 
 console.log("=== LLM 接口连通性测试 ===");
 console.log(`Base URL: ${baseUrl}`);

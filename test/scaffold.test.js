@@ -31,12 +31,12 @@ test("scaffold 创建所有模板文件", () => {
     "src/languages/storage.js",
     "src/languages/settings.json",
     "src/languages/translates/default.json",
-    "src/languages/i18n-plugin/i18nMixin.js",
     "src/languages/formatters/zh.js",
     "src/languages/formatters/en.js",
     "src/languages/formatters/jp.js",
     "src/languages/formatters/ar.js",
-    "src/mixins/i18n-width-mixin.js",
+    "src/mixins/i18n-mixin.js",
+    "src/utils/i18n.js",
     "src/styles/i18n-style.scss",
     "src/utils/elementui-utils.js",
   ];
@@ -154,16 +154,20 @@ test("ensurePostcssConfig force 模式移除旧配置再注入", () => {
   assert.ok(!content.includes("enabled: false"), "旧配置 enabled: false 应被移除");
 });
 
-test("i18nMixin 模板声明 VoerkaI18n 全局变量", () => {
+test("i18n-mixin 模板包含 displayName 方法", () => {
   const projectRoot = createTempProject();
   scaffold(projectRoot, { packageName: "test" }, {});
 
   const content = fs.readFileSync(
-    path.join(projectRoot, "src/languages/i18n-plugin/i18nMixin.js"),
+    path.join(projectRoot, "src/mixins/i18n-mixin.js"),
     "utf8",
   );
   assert.ok(
-    content.includes("/* global VoerkaI18n */"),
-    "i18nMixin.js 应声明 VoerkaI18n 为全局变量，避免 eslint no-undef 报错",
+    content.includes("displayNameLabel"),
+    "i18n-mixin.js 应包含 displayNameLabel 方法",
+  );
+  assert.ok(
+    content.includes("displayNameConfig"),
+    "i18n-mixin.js 应包含 displayNameConfig 方法",
   );
 });

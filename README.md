@@ -344,6 +344,7 @@ kd-i18n run --max-steps 100
 │       ├── inject.js                 # AST 代码注入
 │       ├── scan.js                   # 硬编码中文扫描
 │       ├── apply.js                  # t() 自动改写（Babel AST + 正则）
+│       ├── display-name.js           # "中文名称"接入变换（displayNameLabel/displayNameConfig）
 │       ├── translate.js              # 翻译（LLM / 百度 / glossary）
 │       ├── validate.js               # 翻译校验（完整性 + 正确性）
 │       ├── doctor.js                 # 基建完整性检查
@@ -389,8 +390,8 @@ kd-i18n run --max-steps 100
 | `src/languages/settings.json` | 语言列表配置 |
 | `src/languages/translates/default.json` | 翻译源文件 |
 | `src/languages/formatters/{zh,en,jp,ar}.js` | 格式化器 |
-| `src/languages/i18n-plugin/i18nMixin.js` | RTL 方向切换 mixin |
-| `src/mixins/i18n-width-mixin.js` | 多语言宽度适配 |
+| `src/mixins/i18n-mixin.js` | RTL + 宽度适配 + displayName mixin |
+| `src/utils/i18n.js` | 非组件场景 displayNameLabel helper |
 | `src/styles/i18n-style.scss` | RTL 样式覆盖 |
 | `src/utils/elementui-utils.js` | Element UI + KD 组件 locale |
 | `postcss.config.js` | postcss-rtlcss 配置 |
@@ -400,7 +401,7 @@ kd-i18n run --max-steps 100
 | 文件 | 改动 |
 |---|---|
 | `package.json` | 注入 @voerkai18n/* 依赖、postcss-rtlcss、i18n 脚本（跨 section 去重，已在 devDependencies 中的不会重复加到 dependencies） |
-| `src/main.js` | 注入 i18nPlugin、i18nWidthMixin、样式引入 |
+| `src/main.js` | 注入 i18nPlugin、i18nMixin、样式引入 |
 | `vue.config.js` | 注入 voerkai18n-loader 规则 |
 | `src/App.vue` | 注入 i18nMixin、路由标题逻辑 |
 | `src/utils/interceptors-*.js` | 注入 Accept-Language / X-Timezone header（注入到请求成功回调，非错误回调） |
@@ -431,6 +432,8 @@ kd-i18n run --max-steps 100
 | new Date() | `new Date()` → `this.tzNewDate()`（仅无参，带参数不处理） |
 | parseTime() | `parseTime()` → `parseTime(this.tzNewDate())`（仅无参） |
 | dayjs() | `dayjs()` → `this.$i18nNow()`（仅无参） |
+| 中文名称接入 | t('中文名') → `displayNameLabel('中文名')`；t('标签中文名称') → `displayNameLabel('标签中文名称', t('标签显示名称'))` |
+| el-form-item label | 含中文名的 label → `displayNameConfig` 模式（自动注入 data/created 配置） |
 
 不改写的内容：注释、console 调用、已包裹的 t() 调用、import/export 语句、对象属性 key、Directive、`new Date("xxx")` 等带参数调用。
 

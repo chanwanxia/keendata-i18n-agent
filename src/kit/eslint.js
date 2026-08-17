@@ -96,11 +96,13 @@ function runEslintFix(projectRoot, relativeFiles) {
     .map((f) => `"${f.replace(/"/g, '\\"')}"`)
     .join(" ");
 
-  // 使用 --fix 自动修复，--no-error-on-unmatched-pattern 避免文件不匹配时报错
-  // --fix-only 仅修复可自动修复的问题
-  // --rule 'prettier/prettier: off' 禁用 prettier 格式化，避免清除项目原有注释和格式
-  // --rule 'no-console: off' 不修改项目原有的 console 语句
-  const command = `npx eslint --fix --no-error-on-unmatched-pattern --rule 'prettier/prettier: off' --rule 'no-console: off' ${fileList}`;
+ // 使用 --fix 自动修复，--no-error-on-unmatched-pattern 避免文件不匹配时报错
+ // --fix-only 仅修复可自动修复的问题
+ // --rule 'prettier/prettier: off' 禁用 prettier 格式化，避免清除项目原有注释和格式
+ // --rule 'no-console: off' 不修改项目原有的 console 语句
+  // --rule 'vue/max-attributes-per-line: off' 等禁用 vue 模板格式化规则，
+  // 避免对工具未修改的模板代码进行强制换行等格式变更
+  const command = `npx eslint --fix --no-error-on-unmatched-pattern --rule 'prettier/prettier: off' --rule 'no-console: off' --rule 'vue/max-attributes-per-line: off' --rule 'vue/first-attribute-linebreak: off' --rule 'vue/multiline-html-element-content-newline: off' ${fileList}`;
   const result = runShellCommandCaptured(
     command,
     projectRoot,

@@ -1,5 +1,4 @@
-const { applyI18n } = require("./apply");
-const { cleanupI18n } = require("./apply");
+const { applyI18n, cleanupI18n, deescapeUnicode } = require("./apply");
 const { runEslintFix, hasEslintConfig, isEslintAvailable } = require("./eslint");
 const { main } = require("./cli");
 const {
@@ -31,6 +30,7 @@ const {
 module.exports = {
   applyI18n,
   cleanupI18n,
+  deescapeUnicode,
   hasEslintConfig,
   isEslintAvailable,
   buildSuggestedConfig,

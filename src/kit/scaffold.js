@@ -12,12 +12,12 @@ const TEMPLATE_FILES = [
   { template: "languages/settings.json", target: "src/languages/settings.json" },
   { template: "languages/translates/default.json", target: "src/languages/translates/default.json", noOverwrite: true },
   // noOverwrite: true 表示即使 force=true 也不覆盖（保护用户数据和提取结果）
-  { template: "languages/i18n-plugin/i18nMixin.js", target: "src/languages/i18n-plugin/i18nMixin.js" },
   { template: "languages/formatters/zh.js", target: "src/languages/formatters/zh.js" },
   { template: "languages/formatters/en.js", target: "src/languages/formatters/en.js" },
   { template: "languages/formatters/jp.js", target: "src/languages/formatters/jp.js" },
   { template: "languages/formatters/ar.js", target: "src/languages/formatters/ar.js" },
-  { template: "mixins/i18n-width-mixin.js", target: "src/mixins/i18n-width-mixin.js" },
+  { template: "mixins/i18n-mixin.js", target: "src/mixins/i18n-mixin.js" },
+  { template: "utils/i18n.js", target: "src/utils/i18n.js" },
   { template: "styles/i18n-style.scss", target: "src/styles/i18n-style.scss" },
   { template: "utils/elementui-utils.js", target: "src/utils/elementui-utils.js" },
 ];
@@ -61,19 +61,48 @@ function scaffold(projectRoot, profile, config, options = {}) {
     created.push(entry.target);
   });
 
-  const postcssResult = ensurePostcssConfig(projectRoot, options);
+ const postcssResult = ensurePostcssConfig(projectRoot, options);
+  const cleanupResult = cleanupLegacyFiles(projectRoot);
 
-  return {
-    ok: true,
-    summary: {
-      createdCount: created.length,
-      skippedCount: skipped.length,
-      postcssUpdated: postcssResult.updated,
-    },
-    created,
-    skipped,
-    postcss: postcssResult,
-  };
+ return {
+   ok: true,
+   summary: {
+     createdCount: created.length,
+     skippedCount: skipped.length,
+     postcssUpdated: postcssResult.updated,
+     legacyCleaned: cleanupResult.cleaned,
+   },
+   created,
+   skipped,
+   postcss: postcssResult,
+   cleanup: cleanupResult,
+ };
+}
+
+/**
+ * 清理旧版遗留文件：languages/i18n-plugin 目录和 mixins/i18n-width-mixin.js
+ * 这些文件已合并为 mixins/i18n-mixin.js，不再需要单独存在
+ * @param {string} projectRoot - 目标项目根路径
+ * @returns {object} 清理结果 { cleaned: string[] }
+ */
+function cleanupLegacyFiles(projectRoot) {
+  const cleaned = [];
+
+  // 删除旧的 i18n-plugin 目录
+  const i18nPluginDir = path.join(projectRoot, "src/languages/i18n-plugin");
+  if (fs.existsSync(i18nPluginDir)) {
+    fs.rmSync(i18nPluginDir, { recursive: true, force: true });
+    cleaned.push("src/languages/i18n-plugin/");
+  }
+
+  // 删除旧的 i18n-width-mixin.js
+  const widthMixinPath = path.join(projectRoot, "src/mixins/i18n-width-mixin.js");
+  if (fs.existsSync(widthMixinPath)) {
+    fs.unlinkSync(widthMixinPath);
+    cleaned.push("src/mixins/i18n-width-mixin.js");
+  }
+
+  return { cleaned };
 }
 
 /**
@@ -131,5 +160,6 @@ function injectPostcssRtlcss(content) {
 module.exports = {
   scaffold,
   ensurePostcssConfig,
+  cleanupLegacyFiles,
   TEMPLATE_FILES,
 };

@@ -910,3 +910,222 @@ test("cleanup 保留独立 JS 文件的 import { t }", () => {
   const result = fs.readFileSync(path.join(projectRoot, "src/utils.js"), "utf8");
   assert.ok(result.includes('import { t }'), "独立 JS 文件应保留 import");
 });
+
+// ===== 中文名称接入变换测试 =====
+
+test("kd-column-text p-l 中的 t('中文名称') 转换为 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-column-text :p-l="\`realName,\${t('中文名称')}\`"></kd-column-text></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名称')"), `应转换为 displayNameLabel，实际: ${result}`);
+  assert.ok(!result.includes("t('中文名称')"), "不应残留 t('中文名称')");
+});
+
+test("t('显示名称') 是普通国际化文本，不转换为 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><kd-column-text :p-l=\"`realName,${t('显示名称')}`\"></kd-column-text></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes("displayNameLabel"), `显示名称不应转换为 displayNameLabel，实际: ${result}`);
+});
+
+test("kd-column-text p-l 中的 t('中文名') 转换为 displayNameLabel('中文名')", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-column-text :p-l="\`realName,\${t('中文名')}\`"></kd-column-text></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名')"), `应转换为 displayNameLabel('中文名')，实际: ${result}`);
+});
+
+test("el-descriptions-item label 中的 t('中文名称：') 转换为 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-descriptions :colon="false"><el-descriptions-item :label="t('中文名称：')">{{ realName }}</el-descriptions-item></el-descriptions></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名称：')"), `应转换为 displayNameLabel('中文名称：')，实际: ${result}`);
+});
+
+test("el-descriptions-item label 中的 t('中文名：') 转换为 displayNameLabel('中文名：')", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-descriptions :colon=\"false\"><el-descriptions-item :label=\"t('中文名：')\">{{ realName }}</el-descriptions-item></el-descriptions></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名：')"), `应转换为 displayNameLabel('中文名：')，实际: ${result}`);
+});
+
+test("el-form-item label 中的 t('中文名') 转换为 displayNameConfig 模式", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item :label=\"t('中文名')\" prop=\"realName\"><kd-input v-model=\"form.realName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {} }; } };</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('realNameConfig.label'), `应使用 realNameConfig.label，实际: ${result}`);
+  assert.ok(result.includes('realNameConfig.rules'), `应使用 realNameConfig.rules，实际: ${result}`);
+  assert.ok(result.includes('realNameConfig: {}'), `data 中应有 realNameConfig: {}，实际: ${result}`);
+  assert.ok(result.includes('this.realNameConfig = this.displayNameConfig'), `created 中应有 config 初始化，实际: ${result}`);
+});
+
+test("el-form-item label 中的 t('中文名称') 转换为 displayNameConfig 使用默认 chLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item :label=\"t('中文名称')\" prop=\"realName\"><kd-input v-model=\"form.realName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {} }; } };</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('realNameConfig.label'), `应使用 realNameConfig.label，实际: ${result}`);
+  assert.ok(result.includes('this.realNameConfig = this.displayNameConfig'), `应有 displayNameConfig 初始化，实际: ${result}`);
+  // "中文名称"是默认 chLabel，不需要显式传参
+  assert.ok(!result.includes('chLabel:'), `中文名称是默认值，不需要显式 chLabel，实际: ${result}`);
+});
+
+test("el-form-item 保留到已有 created() 中", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item :label=\"t('中文名')\" prop=\"realName\"><kd-input v-model=\"form.realName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {} }; }, created() { this.init(); } };</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('this.realNameConfig = this.displayNameConfig'), `应注入到 created 中，实际: ${result}`);
+  assert.ok(result.includes('this.init()'), `原有 created 代码应保留，实际: ${result}`);
+});
+
+test("display name 变换幂等性：重复执行不产生重复注入", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item :label=\"t('中文名')\" prop=\"realName\"><kd-input v-model=\"form.realName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {} }; } };</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  const configCount = (result.match(/this\.realNameConfig = this\.displayNameConfig/g) || []).length;
+  assert.strictEqual(configCount, 1, `config 初始化应只有 1 处，实际 ${configCount} 处`);
+});
+
+test("placeholder 中的 t('中文名') 转换为 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": '<template><kd-input :placeholder="`${t(\'请输入登录名\')}/${t(\'中文名\')}`"></kd-input></template>',
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名')"), `placeholder 中应转换为 displayNameLabel，实际: ${result}`);
+  assert.ok(!result.includes("t('中文名')"), "不应残留 t('中文名')");
+});
+
+test("script 中 this.t('中文名称') 转换为 this.displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>export default { methods: { getLabel() { return this.t('中文名称'); } } }</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.displayNameLabel('中文名称')"), `script 中应转换为 this.displayNameLabel，实际: ${result}`);
+});
+
+test("t('显示名称列表') 不被转换（不含中文名关键词）", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>{{ t('显示名称列表') }}</div></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes("displayNameLabel"), `不含中文名的文本不应转换，实际: ${result}`);
+});
+
+test("el-form-item prop 有 rules 时设置 required: true", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item :label=\"t('中文名')\" prop=\"realName\"><kd-input v-model=\"form.realName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {}, rules: { realName: [this.mBlurRequired()] } }; } };</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('required: true'), `prop 有 rules 时应设置 required: true，实际: ${result}`);
+});
+
+// ===== 中文名称子串匹配测试 =====
+
+test("kd-column-text p-l 中的 t('标签中文名称') 子串匹配转换为 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><kd-column-text :p-l=\"`chName,${t('标签中文名称')}`\"></kd-column-text></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('标签中文名称', t('标签显示名称'))"), `应生成带 otherLabel 的调用，实际: ${result}`);
+  assert.ok(!result.includes("t('标签中文名称')"), "不应残留 t('标签中文名称')");
+});
+
+test("el-form-item label 中的 t('标签中文名称') 子串匹配转换为 displayNameConfig", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item :label=\"t('标签中文名称')\" prop=\"chName\"><kd-input v-model=\"form.chName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {} }; } };</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('chNameConfig.label'), `应使用 chNameConfig.label，实际: ${result}`);
+  assert.ok(result.includes('chLabel: "标签中文名称"'), `应包含 chLabel，实际: ${result}`);
+  assert.ok(result.includes('otherLabel: this.t("标签显示名称")'), `应包含 otherLabel，实际: ${result}`);
+});
+
+test("el-descriptions-item label 中的 t('中文名：') 精确匹配不生成 otherLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-descriptions-item :label=\"t('中文名：')\">{{ realName }}</el-descriptions-item></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名：')"), `精确匹配应只传 chLabel，实际: ${result}`);
+  assert.ok(!result.includes("标签显示名称"), "精确匹配不应生成 otherLabel");
+});
+
+test("placeholder 中的 t('请输入标签中文名称') 子串匹配", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": '<template><kd-input :placeholder="t(\'请输入标签中文名称\')"></kd-input></template>',
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('请输入标签中文名称', t('请输入标签显示名称'))"), `应生成带 otherLabel 的调用，实际: ${result}`);
+});
+
+test("script 中 this.t('标签中文名称') 子串匹配转换为 this.displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><div></div></template><script>export default { methods: { getLabel() { return this.t('标签中文名称'); } } }</script>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("this.displayNameLabel('标签中文名称', this.t('标签显示名称'))"), `script 中应生成 this.displayNameLabel 带 otherLabel，实际: ${result}`);
+});
+
+test("t('中文名称列表') 子串匹配转换为 displayNameLabel 带 otherLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><div>{{ t('中文名称列表') }}</div></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名称列表', t('显示名称列表'))"), `子串匹配应生成 otherLabel，实际: ${result}`);
+});
+
+test("t('显示名称') 不被转换（普通国际化文本）", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><div>{{ t('显示名称') }}</div></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(!result.includes("displayNameLabel"), `显示名称不应转换为 displayNameLabel，实际: ${result}`);
+});
+
+test("静态 label 含中文名子串转换为 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><el-form-item label=\"标签中文名称\"><kd-input></kd-input></el-form-item></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('标签中文名称', t('标签显示名称'))"), `静态 label 应转换为 displayNameLabel，实际: ${result}`);
+});
+
+test("display name 子串匹配幂等性", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": "<template><kd-column-text :p-l=\"`chName,${t('标签中文名称')}`\"></kd-column-text></template>",
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  const count = (result.match(/displayNameLabel/g) || []).length;
+  assert.strictEqual(count, 1, `displayNameLabel 应只出现 1 次，实际 ${count} 次`);
+});

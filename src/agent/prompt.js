@@ -81,13 +81,21 @@ translate 之后必须执行 validate，并检查结果：
 
 - apply 工具基于 AST 自动改写，能安全处理大部分中文文案包裹
 - 如果 apply 覆盖不到某些中文（如特殊组件属性、动态拼接的文案），可以用 read_file 读取文件内容，理解上下文后用 write_file 手动修改
-- **禁止用 write_file 重写 scaffold 生成的基础设施文件**（src/languages/、src/utils/elementui-utils.js、src/mixins/i18n-width-mixin.js、postcss.config.js 等）。这些文件由 scaffold 工具按金标模板生成，手动重写会导致 API 不兼容和运行时错误。如果 doctor 报告这些文件有问题，用 scaffold（force=true）重新生成，不要手动修改。
+- **禁止用 write_file 重写 scaffold 生成的基础设施文件**（src/languages/、src/utils/elementui-utils.js、src/mixins/i18n-mixin.js、src/utils/i18n.js、postcss.config.js 等）。这些文件由 scaffold 工具按金标模板生成，手动重写会导致 API 不兼容和运行时错误。如果 doctor 报告这些文件有问题，用 scaffold（force=true）重新生成，不要手动修改。
 - 手动修改时，将中文文案包裹为 t("中文") 调用，确保 voerkai18n 能提取
 
 ## 约束
 
 - 只修改项目内文件，不碰 node_modules / dist / .git 目录
 - 保持代码原有功能不变，只做国际化相关改动
+- **中文名称接入**：i18nMixin 已在 main.js 中全局引入，所有组件可直接使用 this.displayNameLabel() 和 this.displayNameConfig()。源代码中可能存在各种旧版写法（如 inject: ["isRtl"]、单文件 import i18nMixin、mixins: [i18nMixin()] ），apply 会自动清理这些旧版声明。
+  - **apply 自动处理**：当 t() 参数中**包含**"中文名"/"中文名称"时（子串匹配），其他语言不能叫"中文名"而需改为"显示名称"，apply 会自动转换为 displayNameLabel/displayNameConfig 调用。"显示名称"本身不包含关键词，不会被转换。具体规则：
+    - 精确匹配（如 t('中文名')）→ displayNameLabel('中文名')（使用默认 otherLabel=t("显示名称")）
+    - 子串匹配（如 t('标签中文名称')）→ displayNameLabel('标签中文名称', t('标签显示名称'))（将“中文名”替换为“显示名称”生成 otherLabel）
+    - kd-column-text p-l、el-descriptions-item label、placeholder 等场景均自动处理
+    - el-form-item 的 label → 自动转为 displayNameConfig 模式（:label="propConfig.label" :rules="propConfig.rules"），并在 data() 和 created() 中注入配置初始化。中文名字段需要 mValidateChinese 校验，其他语言不需要
+    - script 中的 this.t('...中文名...') → this.displayNameLabel(...)，子串匹配时同样生成 this.t(otherLabel)
+  - **手动检查**：apply 完成后，检查 el-form-item 的 displayNameConfig 是否需要补充 required: true（当字段为必填时）。如 prop 在 rules 对象中有规则定义，apply 会自动设置 required: true；否则需手动判断。
 - 翻译时保持 {} 占位符和 \${} 系统变量不变
 - 如果多次重试仍无法解决某个问题，可以跳过该步骤继续后续流程，在最终报告中说明
 - 当所有步骤完成且满足成功标准时，直接回复总结（不需要调用工具）`;

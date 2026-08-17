@@ -209,20 +209,45 @@ function injectMainJs(projectRoot, _options = {}) {
   let source = fs.readFileSync(mainPath, "utf8");
 
   // 幂等性检查：已包含 i18nPlugin 时，仍需检查 i18n 实例导入是否完整
-  if (source.includes("i18nPlugin")) {
-    // 检查是否有 import { i18n } from "@/utils/elementui-utils"
-    // 缺失时补充导入和 new Vue({ i18n }) 实例选项
-    const i18nImportPattern = /import\s*\{\s*i18n\s*\}\s*from\s*["']@\/utils\/elementui-utils["'];?/;
-    if (i18nImportPattern.test(source)) {
-      return { updated: false, message: "main.js 已包含 i18n 注入" };
+ if (source.includes("i18nPlugin")) {
+    // 迁移旧版 i18nWidthMixin -> i18nMixin（合并后的统一 mixin）
+    let migrated = false;
+    if (source.includes("i18nWidthMixin")) {
+      source = source.replace(
+        /import\s*\{\s*i18nWidthMixin\s*\}\s*from\s*["']@\/mixins\/i18n-width-mixin["'];?/,
+        'import { i18nMixin } from "@/mixins/i18n-mixin";',
+      );
+      source = source.replace(/Vue\.mixin\(\s*i18nWidthMixin\s*\)/, "Vue.mixin(i18nMixin)");
+      migrated = true;
     }
-    // 补充 i18n 实例导入和 Vue 实例选项
-    source = ensureI18nInstance(source);
-    fs.writeFileSync(mainPath, source, "utf8");
-    const { runEslintFix } = require("./eslint");
-    runEslintFix(projectRoot, ["src/main.js"]);
-    return { updated: true, message: "main.js 补充了 i18n 实例导入" };
-  }
+   // 检查是否有 import { i18n } from "@/utils/elementui-utils"
+   // 缺失时补充导入和 new Vue({ i18n }) 实例选项
+   const i18nImportPattern = /import\s*\{\s*i18n\s*\}\s*from\s*["']@\/utils\/elementui-utils["'];?/;
+    if (i18nImportPattern.test(source) && !migrated) {
+     return { updated: false, message: "main.js 已包含 i18n 注入" };
+   }
+   // 补充 i18n 实例导入和 Vue 实例选项
+   source = ensureI18nInstance(source);
+    // 检查是否已包含 i18nMixin 导入，缺失时补充
+    if (!/import\s*\{\s*i18nMixin\s*\}\s*from\s*["']@\/mixins\/i18n-mixin["'];?/.test(source)) {
+      source = source.replace(
+        /(import\s*\{\s*i18nPlugin\s*\}\s*from\s*["']@voerkai18n\/vue2["'];?)/,
+        '$1\nimport { i18nMixin } from "@/mixins/i18n-mixin";',
+      );
+    }
+    // 确保有 Vue.mixin(i18nMixin) 调用
+    if (!/Vue\.mixin\(\s*i18nMixin\s*\)/.test(source)) {
+      source = source.replace(
+        /(Vue\.use\(\s*i18nPlugin\s*,\s*\{[^}]*\}\s*\);?)/,
+        '$1\nVue.mixin(i18nMixin);',
+      );
+    }
+    migrated = true;
+   fs.writeFileSync(mainPath, source, "utf8");
+   const { runEslintFix } = require("./eslint");
+   runEslintFix(projectRoot, ["src/main.js"]);
+    return { updated: true, message: migrated ? "main.js 已迁移到 i18nMixin 标准模式" : "main.js 补充了 i18n 实例导入" };
+ }
 
   let ast;
   try {
@@ -237,7 +262,7 @@ function injectMainJs(projectRoot, _options = {}) {
   const importsToAdd = [
     'import { i18nScope } from "@/languages";',
     'import { i18nPlugin } from "@voerkai18n/vue2";',
-    'import { i18nWidthMixin } from "@/mixins/i18n-width-mixin";',
+    'import { i18nMixin } from "@/mixins/i18n-mixin";',
     'require("@/styles/i18n-style.scss");',
   ];
 
@@ -274,9 +299,9 @@ function injectMainJs(projectRoot, _options = {}) {
     );
     const mixinCall = t.expressionStatement(
       t.callExpression(
-        t.memberExpression(t.identifier("Vue"), t.identifier("mixin")),
-        [t.identifier("i18nWidthMixin")],
-      ),
+       t.memberExpression(t.identifier("Vue"), t.identifier("mixin")),
+       [t.identifier("i18nMixin")],
+    ),
     );
     vueUseNode.insertAfter(mixinCall);
     vueUseNode.insertAfter(pluginCall);
@@ -584,7 +609,8 @@ function rebuildRulesArray(content) {
 }
 
 /**
- * 向 App.vue 注入 i18nMixin 和路由标题逻辑
+ * 向 App.vue 注入路由标题逻辑（i18nMixin 已在 main.js 全局引入，无需在此导入）
+ * 清理旧版注入：移除 i18nMixin import、mixins: [i18nMixin()]、inject: ["isRtl"]
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
@@ -596,35 +622,36 @@ function injectAppVue(projectRoot, _options = {}) {
   }
 
   let content = fs.readFileSync(appPath, "utf8");
+  let cleaned = false;
 
-  // 幂等性检查
-  if (content.includes("i18nMixin")) {
-    // 已注入 i18nMixin，但仍需检查 $route watch 是否为标准模式
-    const standardWatchPattern = /this\.t\(route\?\.meta\?\.title\s*\?\?\s*"/;
-    if (standardWatchPattern.test(content)) {
-      return { updated: false, message: "App.vue 已包含 i18nMixin 和标准 watch" };
-    }
-    // 有 i18nMixin 但 watch 不是标准模式，替换 watch
-    content = replaceRouteWatch(content, projectRoot);
-    if (content) {
-      fs.writeFileSync(appPath, content, "utf8");
-      return { updated: true, message: "App.vue 替换了 $route watch 为标准模式" };
-    }
-    return { updated: false, message: "App.vue 已包含 i18nMixin，watch 无需替换" };
+  // 清理旧版注入：移除 i18nMixin import（来自 languages/i18n-plugin）
+  const oldImportPattern = /import\s*\{\s*i18nMixin\s*\}\s*from\s*["']@\/languages\/i18n-plugin\/i18nMixin["'];?\n?/;
+  if (oldImportPattern.test(content)) {
+    content = content.replace(oldImportPattern, "");
+    cleaned = true;
   }
 
-  const mixinImport =
-    'import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";';
+  // 清理旧版注入：移除 mixins 数组中的 i18nMixin()
+  if (/mixins:\s*\[\s*i18nMixin\(\)\s*,?\s*\]/.test(content)) {
+    content = content.replace(/\n\s*mixins:\s*\[\s*i18nMixin\(\)\s*,?\s*\],?/g, "");
+    cleaned = true;
+  } else if (/mixins:\s*\[/.test(content) && /i18nMixin\(\)/.test(content)) {
+    content = content.replace(/,?\s*i18nMixin\(\)/g, "");
+    content = content.replace(/mixins:\s*\[\s*,/, "mixins: [");
+    cleaned = true;
+  }
 
-  content = content.replace(/(<script[^>]*>)/, "$1\n" + mixinImport);
+  // 清理旧版注入：移除 inject 中的 isRtl
+  if (/inject\s*:\s*\[/.test(content) && /"isRtl"/.test(content)) {
+    content = content.replace(/,?\s*"isRtl"/g, "");
+    content = content.replace(/\n\s*inject\s*:\s*\[\s*\],?/g, "");
+    cleaned = true;
+  }
 
-  if (content.includes("mixins:")) {
-    content = content.replace(/(mixins:\s*\[)/, "$1i18nMixin(), ");
-  } else {
-    content = content.replace(
-      /(export\s+default\s*\{)/,
-      "$1\n  mixins: [i18nMixin()],",
-    );
+  // 检查 $route watch 是否为标准模式
+  const standardWatchPattern = /this\.t\(route\?\.meta\?\.title\s*\?\?\s*"/;
+  if (standardWatchPattern.test(content) && !cleaned) {
+    return { updated: false, message: "App.vue 已包含标准路由 watch，无需修改" };
   }
 
   // 替换 $route watch 为标准模式
@@ -633,9 +660,12 @@ function injectAppVue(projectRoot, _options = {}) {
     content = replaced;
   }
 
+  if (cleaned || replaced) {
+    fs.writeFileSync(appPath, content, "utf8");
+    return { updated: true, message: cleaned ? "App.vue 清理了旧版注入并设置标准路由 watch" : "App.vue 设置了标准路由 watch" };
+  }
 
-  fs.writeFileSync(appPath, content, "utf8");
-  return { updated: true };
+  return { updated: false, message: "App.vue 无需修改" };
 }
 
 /**
@@ -949,7 +979,8 @@ function injectAcceptLanguage(projectRoot, _options = {}) {
 }
 
 /**
- * 向 layout-header 组件注入语言切换器（kd-select）和 i18nMixin
+ * 向 layout-header 组件注入语言切换器（kd-select）
+ * i18nMixin 已在 main.js 全局引入，layout-header 无需单独导入 mixin 或声明 inject
  * 查找策略：优先 src/layout/layout-header/index.vue，否则搜索 src/layout/ 下含 right-box 的 .vue 文件
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - 选项 { force: boolean }
@@ -975,32 +1006,39 @@ function injectLayoutHeader(projectRoot, _options = {}) {
   }
 
   let content = fs.readFileSync(headerPath, "utf8");
+  let changed = false;
 
-  // 幂等性检查：已包含 i18nMixin 则跳过
-  // force 模式下也跳过 —— layout-header 一旦注入 i18nMixin 就不会"内容不完整"
-  if (content.includes("i18nMixin")) {
-    return { updated: false, message: "layout-header 已包含 i18nMixin", file: headerRelative };
+  // 清理旧版注入：移除 i18nMixin import（来自 languages/i18n-plugin）
+  const oldImportPattern = /import\s*\{\s*i18nMixin\s*\}\s*from\s*["']@\/languages\/i18n-plugin\/i18nMixin["'];?\n?/;
+  if (oldImportPattern.test(content)) {
+    content = content.replace(oldImportPattern, "");
+    changed = true;
   }
 
-  // 1. 注入 import { i18nMixin }
-  if (!content.includes("i18nMixin")) {
-    const mixinImport = 'import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";';
-    content = content.replace(/(<script[^>]*>)/, "$1\n" + mixinImport);
+  // 清理旧版注入：移除 mixins 数组中的 i18nMixin()
+  if (/mixins:\s*\[\s*i18nMixin\(\)\s*,?\s*\]/.test(content)) {
+    content = content.replace(/\n\s*mixins:\s*\[\s*i18nMixin\(\)\s*,?\s*\],?/g, "");
+    changed = true;
+  } else if (/mixins:\s*\[/.test(content) && /i18nMixin\(\)/.test(content)) {
+    content = content.replace(/,?\s*i18nMixin\(\)/g, "");
+    content = content.replace(/mixins:\s*\[\s*,/, "mixins: [");
+    changed = true;
   }
 
-  // 2. 注入 mixins: [i18nMixin()]
-  if (content.includes("mixins:")) {
-    if (!content.includes("i18nMixin()")) {
-      content = content.replace(/(mixins:\s*\[)/, "$1i18nMixin(), ");
-    }
-  } else {
-    content = content.replace(
-      /(export\s+default\s*\{)/,
-      "$1\n  mixins: [i18nMixin()],",
-    );
+  // 清理旧版注入：移除 inject 中的 isRtl
+  if (/inject\s*:\s*\[/.test(content) && /"isRtl"/.test(content)) {
+    content = content.replace(/,?\s*"isRtl"/g, "");
+    content = content.replace(/\n\s*inject\s*:\s*\[\s*\],?/g, "");
+    changed = true;
   }
 
-  // 3. 在 right-box 区域注入语言切换器
+  // 迁移：将旧版 @change="changeLanguage" 改为 @change="languageChange"
+  if (/@change="changeLanguage"/.test(content)) {
+    content = content.replace(/@change="changeLanguage"/g, '@change="languageChange"');
+    changed = true;
+  }
+
+  // 在 right-box 区域注入语言切换器（如尚未存在）
   const languageSwitcher = [
     "      <!-- 语言切换器 -->",
     "      <kd-select",
@@ -1009,7 +1047,7 @@ function injectLayoutHeader(projectRoot, _options = {}) {
     '        label="title"',
     '        val="name"',
     '        width="160"',
-    '        @change="changeLanguage"',
+    '        @change="languageChange"',
     "      ></kd-select>",
   ].join("\n");
 
@@ -1021,12 +1059,17 @@ function injectLayoutHeader(projectRoot, _options = {}) {
       if (inner.includes("activeLanguage")) return match;
       const trimmedInner = inner.trim();
       const separator = trimmedInner ? "\n" + trimmedInner + "\n    " : "\n    ";
+      changed = true;
       return openTag + "\n" + languageSwitcher + separator + closeTag;
     });
   }
 
-  fs.writeFileSync(headerPath, content, "utf8");
-  return { updated: true, file: headerRelative };
+  if (changed) {
+    fs.writeFileSync(headerPath, content, "utf8");
+    return { updated: true, file: headerRelative };
+  }
+
+  return { updated: false, message: "layout-header 无需修改", file: headerRelative };
 }
 
 /**

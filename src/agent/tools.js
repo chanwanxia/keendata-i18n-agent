@@ -56,16 +56,20 @@ function createTools(projectRoot, config) {
         },
         required: ["relativePath", "content"],
       },
-      execute(args) {
-        const filePath = path.join(projectRoot, args.relativePath);
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, args.content, "utf8");
-        return {
-          relativePath: args.relativePath,
-          written: true,
-          bytes: args.content.length,
-        };
-      },
+     execute(args) {
+       const filePath = path.join(projectRoot, args.relativePath);
+       fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        // 还原 LLM 可能输出的 \uXXXX 转义序列为实际中文字符
+        const content = kit.deescapeUnicode
+          ? kit.deescapeUnicode(args.content)
+          : args.content;
+        fs.writeFileSync(filePath, content, "utf8");
+       return {
+         relativePath: args.relativePath,
+         written: true,
+          bytes: content.length,
+       };
+     },
     },
     {
       name: "list_files",

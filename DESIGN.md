@@ -69,8 +69,8 @@ scaffold → inject → check_cli → doctor → scan → apply → extract → 
 | `languages/formatters/jp.js` | `src/languages/formatters/jp.js` | 空格式化器 |
 | `languages/formatters/ar.js` | `src/languages/formatters/ar.js` | 空格式化器 |
 | `languages/translates/default.json` | `src/languages/translates/default.json` | 空翻译源 `{}` |
-| `languages/i18n-plugin/i18nMixin.js` | `src/languages/i18n-plugin/i18nMixin.js` | RTL 方向切换 mixin |
-| `mixins/i18n-width-mixin.js` | `src/mixins/i18n-width-mixin.js` | `getI18nWidth` 宽度适配 helper |
+| `mixins/i18n-mixin.js` | `src/mixins/i18n-mixin.js` | RTL 方向切换 + 宽度适配 + displayName mixin |
+| `utils/i18n.js` | `src/utils/i18n.js` | 非组件场景 displayNameLabel helper |
 | `styles/i18n-style.scss` | `src/styles/i18n-style.scss` | RTL 样式覆盖 |
 | `utils/elementui-utils.js` | `src/utils/elementui-utils.js` | Element UI + KD 组件 locale 适配；依赖 `@kd/components >= 5.x`（v5 起才有 `dist/locale/lang/*`）；通过 VueI18n 实例统一接管 Element UI + @kd/components 的 locale；main.js inject 依赖此文件的 `i18n` 导出 |
 | `postcss.config.js` | `postcss.config.js` | postcss-rtlcss 配置（如不存在则创建，已存在则注入 postcss-rtlcss 插件配置） |
@@ -141,12 +141,12 @@ module.exports = {
 **插入 import**（在现有 import 区域末尾）：
 - `import { i18nScope } from "@/languages"`
 - `import { i18nPlugin } from "@voerkai18n/vue2"`
-- `import { i18nWidthMixin } from "@/mixins/i18n-width-mixin"`
+- `import { i18nMixin } from "@/mixins/i18n-mixin"`
 - `require("@/styles/i18n-style.scss")`
 
 **插入 Vue 调用**（在现有 `Vue.use(...)` 序列附近）：
 - `Vue.use(i18nPlugin, { i18nScope })`
-- `Vue.mixin(i18nWidthMixin)`
+- `Vue.mixin(i18nMixin)`
 
 **旧 vue-i18n 替换**：
 - 如果存在 `import i18n from "@/assets/lang/index"` 等旧引入，替换为 `import { i18n } from "@/utils/elementui-utils"`
@@ -165,7 +165,7 @@ module.exports = {
   test: /\.(js|vue)$/,
   use: [{
     loader: "voerkai18n-loader",
-    options: { autoImport: true, debug: false }
+    options: { autoImport: true, debug: false },
   }],
   include: path.join(__dirname, "src"),
   enforce: "pre"
@@ -181,7 +181,7 @@ module.exports = {
 ### 3.5 App.vue 路由标题注入
 
 解析 `<script>` 部分：
-- 注入 `import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin"`
+- 注入 `import { i18nMixin } from "@/mixins/i18n-mixin"`
 - 组件 options 中添加 `mixins: [i18nMixin()]`（已有 mixins 则追加）
 - **替换**整个 `$route` watch handler 为标准模式：
   - 从原 watch 中提取项目特定的 fallback 标题（如"数据湖"），替换到标准模式中
@@ -224,7 +224,7 @@ module.exports = {
 ```
 
 **script 注入**：
-- 注入 `import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin"`
+- 注入 `import { i18nMixin } from "@/mixins/i18n-mixin"`
 - 组件 options 添加 `mixins: [i18nMixin()]`（已有 mixins 则追加）
 
 `activeLanguage`、`languages`、`changeLanguage` 均由 `i18nMixin()` 的 computed/methods 提供，无需额外声明。
@@ -367,7 +367,7 @@ border-left ↔ border-right
 <el-form :label-width="getI18nWidth({ zh: '80px', en: '120px' })"></el-form>
 ```
 
-`getI18nWidth` 由 `Vue.mixin(i18nWidthMixin)` 全局注册，所有组件可直接使用 `this.getI18nWidth()`。
+`getI18nWidth` 由 `Vue.mixin(i18nMixin)` 全局注册，所有组件可直接使用 `this.getI18nWidth()`。
 
 ### 4.10 el-form label-width 自动适配
 
@@ -409,6 +409,40 @@ apply 模块自动执行以下时区相关代码变换，确保时间处理与�
 **Mixin 方法**：`tzDateNow()`、`tzNewDate()`、`$i18nNow()` 由 `@kd/components` 组件库提供，无需在项目中额外定义。
 
 **请求头注入**：请求拦截器中已注入 `config.headers["X-Timezone"] = localStorage.getItem("i18n-tz")`，将用户时区传递给后端。
+
+### 4.12 "中文名称"接入（displayName）
+
+部分字段（如用户姓名 `realName`）在中文环境显示为"中文名"/"中文名称"，但其他语言不能叫"中文名"，需改为"显示名称"。该逻辑通过 `src/mixins/i18n-mixin.js` 中全局注入的两个方法实现，无需在单文件中 import 或声明 mixins。
+
+**核心方法**（由 `i18nMixin` 通过 `Vue.mixin` 全局注册）：
+
+- `displayNameLabel(chLabel, otherLabel)` — 用于标签/列头/描述项。中文环境返回 `chLabel`，其他语言返回 `otherLabel`
+- `displayNameConfig(config)` — 用于表单项。返回 `{ isZh, label, placeholder, rules }`，中文环境额外添加 `mValidateChinese` 校验
+
+**非组件场景**：`src/utils/i18n.js` 导出独立的 `displayNameLabel` 函数，供 API 层、工具函数等非组件 JS 使用。
+
+**apply 自动变换**（在 t() 包裹之后执行，代码位于 `src/kit/display-name.js`）：
+
+检测 `t()` 参数中是否**包含**"中文名"或"中文名称"关键词（子串匹配）。"显示名称"本身不触发转换。
+
+| 场景 | 变换前 | 变换后 |
+|---|---|---|
+| kd-column-text p-l (精确) | `${t('中文名')}` | `${displayNameLabel('中文名')}` |
+| kd-column-text p-l (子串) | `${t('标签中文名称')}` | `${displayNameLabel('标签中文名称', t('标签显示名称'))}` |
+| el-descriptions-item label | `:label="t('中文名：')"` | `:label="displayNameLabel('中文名：')"` |
+| 任意元素 placeholder (子串) | `${t('请输入标签中文名称')}` | `${displayNameLabel('请输入标签中文名称', t('请输入标签显示名称'))}` |
+| script 方法 (精确) | `this.t('中文名称')` | `this.displayNameLabel('中文名称')` |
+| script 方法 (子串) | `this.t('标签中文名称')` | `this.displayNameLabel('标签中文名称', this.t('标签显示名称'))` |
+
+**el-form-item 自动注入**：当 `el-form-item` 的 `label` 包含关键词时，apply 会：
+1. 将 `:label` 替换为 `:label="propConfig.label"`，添加 `:rules="propConfig.rules"`
+2. 在 `data()` return 中注入 `propConfig: {}`
+3. 在 `created()` 中注入 `this.propConfig = this.displayNameConfig(...)`
+4. 若 `prop` 在 `rules` 对象中有规则定义，自动设置 `required: true` 并移除旧规则
+
+**otherLabel 生成规则**：将文本中的"中文名称"替换为"显示名称"，再将剩余的"中文名"替换为"显示名称"。
+
+**幂等性**：已使用 `displayNameLabel`/`displayNameConfig` 的代码不会被重复处理。
 
 ---
 
