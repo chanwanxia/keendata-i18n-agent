@@ -13,9 +13,8 @@ const { inject, checkGlobalCliVersion } = require("./inject");
 const { scaffold } = require("./scaffold");
 const { scanHardcodedChinese } = require("./scan");
 const { translateTranslations } = require("./translate");
-const { validateTranslations, inspectGeneratedFiles, fixIdMapKeys } = require("./validate");
+const { validateTranslations, inspectGeneratedFiles, postCompileFix } = require("./validate");
 const { runShellCommand } = require("./shell");
-const { runEslintFix } = require("./eslint");
 
 async function main(argv) {
   const { command, flags } = parseArgs(argv);
@@ -296,13 +295,8 @@ async function runCommand(projectRoot, config, flags) {
       result.ok = false;
       return finalizeRun(result, flags);
     }
-    // compile 后修复 idMap.js 中未加引号的中文 key
-    fixIdMapKeys(projectRoot);
-    // 对编译生成的语言包文件执行 eslint --fix，修复引号等格式问题
-    const generatedFiles = config.generatedFiles || [];
-    if (generatedFiles.length > 0) {
-      runEslintFix(projectRoot, generatedFiles);
-    }
+    // compile 后统一修复：idMap.js 引号 + .prettierignore + eslint --fix
+    postCompileFix(projectRoot, config);
   }
 
   result.generated = inspectGeneratedFiles(projectRoot, config);

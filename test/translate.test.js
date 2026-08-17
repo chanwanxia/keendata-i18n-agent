@@ -335,3 +335,45 @@ test("fixIdMapKeys 混合场景：未加引号 + 带空格 + 正常 key", () => 
   assert.ok(content.includes('"正常key"'), "正常 key 应保持不变");
   assert.ok(content.includes('"含 空格的 key"'), "中间空格应保留");
 });
+
+// ===== ensurePrettierIgnore 测试 =====
+
+const { ensurePrettierIgnore } = require("../src/kit/validate");
+
+function createIgnoreProject(generatedFiles) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i18n-prettier-"));
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify({ name: "test" }),
+  );
+  return { dir, config: { generatedFiles } };
+}
+
+test("ensurePrettierIgnore 创建 .prettierignore 并写入生成文件", () => {
+  const { dir, config } = createIgnoreProject([
+    "src/languages/idMap.js",
+    "src/languages/zh.js",
+  ]);
+  const result = ensurePrettierIgnore(dir, config);
+  const content = fs.readFileSync(path.join(dir, ".prettierignore"), "utf8");
+  assert.ok(result.updated, "应报告已更新");
+  assert.ok(content.includes("src/languages/idMap.js"), "应包含 idMap.js");
+  assert.ok(content.includes("src/languages/zh.js"), "应包含 zh.js");
+});
+
+test("ensurePrettierIgnore 幂等：已存在时不重复追加", () => {
+  const { dir, config } = createIgnoreProject(["src/languages/idMap.js"]);
+  ensurePrettierIgnore(dir, config);
+  const result2 = ensurePrettierIgnore(dir, config);
+  assert.ok(!result2.updated, "第二次应报告未更新");
+});
+
+test("ensurePrettierIgnore 追加到已有 .prettierignore", () => {
+  const { dir, config } = createIgnoreProject(["src/languages/idMap.js"]);
+  fs.writeFileSync(path.join(dir, ".prettierignore"), "node_modules\n", "utf8");
+  const result = ensurePrettierIgnore(dir, config);
+  const content = fs.readFileSync(path.join(dir, ".prettierignore"), "utf8");
+  assert.ok(result.updated, "应报告已更新");
+  assert.ok(content.includes("node_modules"), "应保留原有内容");
+  assert.ok(content.includes("src/languages/idMap.js"), "应追加 idMap.js");
+});

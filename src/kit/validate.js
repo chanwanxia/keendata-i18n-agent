@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { runEslintFix } = require("./eslint");
 
 // voerkai18n 运行时占位符正则：匹配 {}, {name}, { name }, {name|formatter} 等
 // 不匹配 {#...#} 等非 voerkai18n 语法的花括号内容，与运行时 interpolate 行为一致
@@ -300,7 +301,73 @@ function fixIdMapKeys(projectRoot) {
   return { ok: true, fixed: false, file: "src/languages/idMap.js" };
 }
 
+
+/**
+ * 确保目标项目的 .prettierignore 包含编译生成的语言包文件，
+ * 防止 prettier（compile 脚本中的 prettier --write 或 git hooks 中的 prettier）
+ * 移除 idMap.js 中中文 key 的引号，导致 voerkai18n-loader 报错 "idMap.ts 不存在"
+ * @param {string} projectRoot - 项目根路径
+ * @param {object} config - i18n 配置
+ * @returns {object} { updated, file }
+ */
+function ensurePrettierIgnore(projectRoot, config) {
+  const ignorePath = path.join(projectRoot, ".prettierignore");
+  const filesToIgnore = config.generatedFiles || [];
+  if (filesToIgnore.length === 0) {
+    return { updated: false, file: ".prettierignore" };
+  }
+
+  let content = "";
+  if (fs.existsSync(ignorePath)) {
+    content = fs.readFileSync(ignorePath, "utf8");
+  }
+
+  // 仅追加尚未列入的文件，保持幂等
+  const missing = filesToIgnore.filter((f) => !content.includes(f));
+  if (missing.length === 0) {
+    return { updated: false, file: ".prettierignore" };
+  }
+
+  const header =
+    "# voerkai18n 编译生成的语言包文件，不应被 prettier 格式化";
+  const block = `\n${header}\n${missing.join("\n")}\n`;
+  fs.writeFileSync(ignorePath, content.trimEnd() + "\n" + block, "utf8");
+  return { updated: true, file: ".prettierignore" };
+}
+
+/**
+ * compile 后统一修复，集中管理编译后的修复逻辑，避免在 tools/runner/cli 三处重复
+ * 1. fixIdMapKeys：修复 idMap.js 中未加引号的中文 key
+ * 2. ensurePrettierIgnore：防止 prettier（compile 脚本 / git hooks）再次移除引号
+ * 3. eslint --fix：仅处理非 idMap.js 的生成文件，避免 eslint quote-props 规则移除引号
+ * @param {string} projectRoot - 项目根路径
+ * @param {object} config - i18n 配置
+ * @returns {object} { ok, idMapFixed, prettierIgnoreUpdated, eslintFixedCount }
+ */
+function postCompileFix(projectRoot, config) {
+  const fixResult = fixIdMapKeys(projectRoot);
+  const ignoreResult = ensurePrettierIgnore(projectRoot, config);
+
+  const eslintFiles = (config.generatedFiles || []).filter(
+    (f) => !f.endsWith("idMap.js"),
+  );
+  let eslintFixedCount = 0;
+  if (eslintFiles.length > 0) {
+    const eslintResult = runEslintFix(projectRoot, eslintFiles);
+    eslintFixedCount = eslintResult.fixedCount || 0;
+  }
+
+  return {
+    ok: fixResult.ok,
+    idMapFixed: fixResult.fixed,
+    prettierIgnoreUpdated: ignoreResult.updated,
+    eslintFixedCount,
+  };
+}
+
 module.exports = {
+  ensurePrettierIgnore,
+  postCompileFix,
   inspectGeneratedFiles,
   extractPlaceholders,
   extractLiterals,

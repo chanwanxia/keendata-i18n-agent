@@ -324,13 +324,16 @@ async function executeAction(action, state, flags) {
      projectRoot,
      "agent 执行语言包编译",
    );
-   // compile 后修复 idMap.js 中未加引号的中文 key，防止 voerkai18n-loader require 失败
-   if (status === 0) {
-     const fixResult = kit.fixIdMapKeys(projectRoot);
-     if (fixResult.fixed) {
+  if (status === 0) {
+     // compile 后统一修复：idMap.js 引号 + .prettierignore + eslint --fix
+     const fixResult = kit.postCompileFix(projectRoot, config);
+     if (fixResult.idMapFixed) {
        console.log("[i18n-agent] fixIdMapKeys: 已修复 idMap.js 未加引号的 key");
      }
-   }
+     if (fixResult.prettierIgnoreUpdated) {
+       console.log("[i18n-agent] ensurePrettierIgnore: 已更新 .prettierignore");
+     }
+  }
    state.results.compile = {
      ok: status === 0,
      command: config.compileCommand,

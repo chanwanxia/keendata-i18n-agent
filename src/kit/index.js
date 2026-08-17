@@ -23,6 +23,7 @@ const {
   fixIdMapKeys,
   inspectGeneratedFiles,
   isPlaceholderCompatible,
+  postCompileFix,
   validateTranslationObject,
   validateTranslations,
 } = require("./validate");
@@ -48,6 +49,7 @@ module.exports = {
   injectVueConfig,
   inspectGeneratedFiles,
   inspectProjectSetup,
+  postCompileFix,
   isPlaceholderCompatible,
   loadProjectConfig,
   main,
