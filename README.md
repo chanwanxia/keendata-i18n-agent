@@ -103,6 +103,8 @@ kd-i18n run --reset-key
 | `LLM_API_KEY` | LLM API 密钥（必需） | 无 |
 | `LLM_BASE_URL` | API 端点 | `http://router.keendata.net:5343/v1` |
 | `LLM_MODEL` | 模型名称 | `gpt-5.5` |
+| `LLM_MAX_RETRIES` | SDK 自动重试次数，降低 429 请求放大 | `1` |
+| `LLM_BATCH_CONCURRENCY` | LLM 翻译批次并发数 | `1` |
 
 ### 审计项目国际化合规性
 
@@ -290,8 +292,10 @@ agent 流程控制配置，控制 `run` 命令的行为：
     "apiKeyEnv": "LLM_API_KEY",
     "baseUrlEnv": "LLM_BASE_URL",
     "modelEnv": "LLM_MODEL",
+    "maxRetriesEnv": "LLM_MAX_RETRIES",
     "defaultBaseUrl": "http://router.keendata.net:5343/v1",
-    "defaultModel": "gpt-5.5"
+    "defaultModel": "gpt-5.5",
+    "maxRetries": 1
   }
 }
 ```

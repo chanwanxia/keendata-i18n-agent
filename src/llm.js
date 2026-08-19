@@ -6,6 +6,35 @@
 
 const { OpenAI } = require("openai");
 
+/** LLM SDK 自动重试默认次数，低于 openai SDK 默认值以减少 429 放大 */
+const DEFAULT_LLM_MAX_RETRIES = 1;
+
+/**
+ * 解析非负整数配置，非法值回退到默认值。
+ * @param {string|number|undefined} value - 待解析的配置值
+ * @param {number} fallback - 默认值
+ * @returns {number} 非负整数配置
+ */
+function parseNonNegativeInteger(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+/**
+ * 解析 LLM SDK 自动重试次数，支持 LLM_MAX_RETRIES 或 llm.maxRetries 覆盖。
+ * @param {object} llmConfig - LLM 配置
+ * @returns {number} SDK 自动重试次数
+ */
+function resolveLlmMaxRetries(llmConfig = {}) {
+  const maxRetriesEnv = llmConfig.maxRetriesEnv || "LLM_MAX_RETRIES";
+  return parseNonNegativeInteger(
+    process.env[maxRetriesEnv] ?? llmConfig.maxRetries,
+    DEFAULT_LLM_MAX_RETRIES,
+  );
+}
+
 /**
  * 创建 OpenAI 兼容的 LLM 客户端（指向公司模型路由）
  * @param {object} agentConfig - agent 配置，含 llm 字段
@@ -25,7 +54,11 @@ function createLlmClient(agentConfig) {
   const model =
     process.env[modelEnv] || llmConfig.defaultModel || "gpt-5.5";
 
-  const client = new OpenAI({ baseURL, apiKey });
+  const client = new OpenAI({
+    baseURL,
+    apiKey,
+    maxRetries: resolveLlmMaxRetries(llmConfig),
+  });
 
   return {
     client,
@@ -51,4 +84,5 @@ function createLlmClient(agentConfig) {
 
 module.exports = {
   createLlmClient,
+  resolveLlmMaxRetries,
 };

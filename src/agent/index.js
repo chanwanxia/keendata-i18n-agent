@@ -6,6 +6,7 @@ const { createTools } = require("./tools");
 const { buildSystemPrompt } = require("./prompt");
 const { runAgentLoop } = require("./loop");
 const { resolveCredentials } = require("../credentials");
+const { resolveLlmMaxRetries } = require("../llm");
 
 /** 动态步数的文件计数缩放因子（每 N 个文件加 1 步） */
 const FILE_SCALE_FACTOR = 5;
@@ -91,6 +92,7 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
   const client = new OpenAI({
     baseURL: credentials.baseUrl,
     apiKey: credentials.apiKey,
+    maxRetries: resolveLlmMaxRetries(agentConfig.llm),
   });
   const model = credentials.model;
 

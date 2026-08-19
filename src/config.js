@@ -14,8 +14,10 @@ const DEFAULT_AGENT_CONFIG = {
     apiKeyEnv: "LLM_API_KEY",
     baseUrlEnv: "LLM_BASE_URL",
     modelEnv: "LLM_MODEL",
+    maxRetriesEnv: "LLM_MAX_RETRIES",
     defaultBaseUrl: "http://router.keendata.net:5343/v1",
     defaultModel: "gpt-5.5",
+    maxRetries: 1,
   },
 };
 

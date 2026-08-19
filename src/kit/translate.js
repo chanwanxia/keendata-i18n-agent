@@ -7,6 +7,7 @@ const {
   extractPlaceholders,
   isPlaceholderTranslation,
 } = require("./validate");
+const { resolveLlmMaxRetries } = require("../llm");
 const { OpenAI } = require("openai");
 
 // voerkai18n 运行时占位符正则，与 validate.js 保持一致
@@ -338,15 +339,27 @@ function applyGlossaryPostProcess(
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 翻译结果报告
  */
-/** LLM 翻译并发批次数，提升大批量翻译速度 */
-const LLM_BATCH_CONCURRENCY = 3;
+/** LLM 翻译默认并发批次数，默认串行以降低触发 429 的概率 */
+const DEFAULT_LLM_BATCH_CONCURRENCY = 1;
+
+/**
+ * 解析 LLM 翻译批次并发数，支持 LLM_BATCH_CONCURRENCY 覆盖。
+ * @returns {number} 至少为 1 的批次并发数
+ */
+function resolveLlmBatchConcurrency() {
+  const parsed = Number(process.env.LLM_BATCH_CONCURRENCY);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_LLM_BATCH_CONCURRENCY;
+  }
+  return parsed;
+}
 
 /**
  * 使用 LLM (OpenAI 兼容 API) 批量翻译 default.json 中缺失或无效的翻译。
  *
  * 设计要点：
  * - 增量检测：只翻译空翻译和占位式无效翻译，已有有效翻译保持不变
- * - 并发批次：同时发送多个批次请求（默认 3 个），大幅缩短总耗时
+ * - 批次并发：默认串行处理，可通过 LLM_BATCH_CONCURRENCY 调高并发
  * - 逐批写入：每完成一组并发批次就写入文件，中断后重新 run 只丢失当前组
  * - 幂等恢复：中断后重新 run 时，已写入的翻译会被跳过，不会重复翻译
  *
@@ -365,6 +378,11 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   const baseUrl =
     process.env["LLM_BASE_URL"] || "http://router.keendata.net:5343/v1";
   const model = process.env["LLM_MODEL"] || "gpt-5.5";
+  const client = new OpenAI({
+    baseURL: baseUrl,
+    apiKey,
+    maxRetries: resolveLlmMaxRetries(),
+  });
   const translationPath = path.join(projectRoot, config.translationFile);
 
   if (!fs.existsSync(translationPath)) {
@@ -418,24 +436,25 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   const batchSize = 50;
   const sourceTexts = [...new Set(missingEntries.map((e) => e.sourceText))];
   const totalBatches = Math.ceil(sourceTexts.length / batchSize);
+  const batchConcurrency = resolveLlmBatchConcurrency();
   let translatedCount = 0;
   let completedBatches = 0;
 
   // 按并发数分组处理批次，每组完成后写入文件
-  for (let gi = 0; gi < totalBatches; gi += LLM_BATCH_CONCURRENCY) {
-    const groupEnd = Math.min(gi + LLM_BATCH_CONCURRENCY, totalBatches);
+  for (let gi = 0; gi < totalBatches; gi += batchConcurrency) {
+    const groupEnd = Math.min(gi + batchConcurrency, totalBatches);
 
     console.log(
       `[i18n-kit] LLM 翻译进度: 批次 ${gi + 1}-${groupEnd}/${totalBatches} (${sourceTexts.length} 条待翻译)`,
     );
 
-    // 并发发送当前组的所有批次
+    // 按配置并发发送当前组的所有批次
     const batchPromises = [];
     for (let bi = gi; bi < groupEnd; bi += 1) {
       const start = bi * batchSize;
       const batch = sourceTexts.slice(start, start + batchSize);
       batchPromises.push(
-        callLlmTranslate(batch, targetLanguages, glossary, apiKey, baseUrl, model)
+        callLlmTranslate(client, batch, targetLanguages, glossary, model)
           .then((results) => ({ results, batchNum: bi + 1, ok: true }))
           .catch((error) => {
             console.warn(`[i18n-kit] LLM 翻译批次 ${bi + 1} 失败: ${error.message}`);
@@ -488,23 +507,20 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
 
 /**
  * 调用 LLM API 批量翻译
+ * @param {object} client - OpenAI SDK 客户端实例
  * @param {string[]} sourceTexts - 待翻译的中文文本数组
  * @param {string[]} targetLanguages - 目标语言数组
  * @param {object} glossary - 术语表
- * @param {string} apiKey - API Key
- * @param {string} baseUrl - API Base URL
  * @param {string} model - 模型名称
  * @returns {Promise<object[]>} 翻译结果数组
  */
 async function callLlmTranslate(
+  client,
   sourceTexts,
   targetLanguages,
   glossary,
-  apiKey,
-  baseUrl,
   model,
 ) {
-  const client = new OpenAI({ baseURL: baseUrl, apiKey });
   const systemMessage = [
     "你是一个专业的软件国际化翻译引擎。",
     "你的任务：将给定的中文文本数组翻译为指定的目标语言。",
@@ -598,5 +614,6 @@ function normalizePlaceholderTokens(translatedText, tokens) {
 }
 
 module.exports = {
+  resolveLlmBatchConcurrency,
   translateTranslations,
 };
