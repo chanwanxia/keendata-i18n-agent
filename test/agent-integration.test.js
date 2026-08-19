@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { createTools, toToolDefinitions } = require("../src/agent/tools");
+const { createTools } = require("../src/agent/tools");
 const { runAgentLoop } = require("../src/agent/loop");
 
 /**

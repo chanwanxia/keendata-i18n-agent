@@ -959,6 +959,212 @@ test("el-descriptions-item label 中的 t('中文名：') 转换为 displayNameL
   assert.ok(result.includes("displayNameLabel('中文名：')"), `应转换为 displayNameLabel('中文名：')，实际: ${result}`);
 });
 
+test("cleanup 将 displayNameLabel 参数中的 Unicode 转义还原为中文", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": String.raw`<template><el-descriptions-item :label="displayNameLabel('\u4e2d\u6587\u540d\uff1a')">{{ userInfo.realName }}</el-descriptions-item></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名：')"), `Unicode 转义应还原为中文，实际: ${result}`);
+  assert.ok(!result.includes("\\u4e2d"), `不应残留 Unicode 转义，实际: ${result}`);
+});
+
+test("cleanup 对跳过 apply 的基础设施文件也还原 Unicode 转义", () => {
+  const projectRoot = createTempProject({
+    "src/mixins/i18n-mixin.js": String.raw`export const i18nMixin = { methods: { displayNameLabel(chLabel = "\u4e2d\u6587\u540d\u79f0") { return chLabel; } } };`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/mixins/i18n-mixin.js"), "utf8");
+  assert.ok(result.includes('chLabel = "中文名称"'), `基础设施文件中的 Unicode 转义应还原，实际: ${result}`);
+  assert.ok(!result.includes("\\u4e2d"), `不应残留 Unicode 转义，实际: ${result}`);
+  assert.ok(!result.includes("this.t"), `基础设施文件不应被 apply 包裹 t()，实际: ${result}`);
+});
+
+test("cleanup 还原 displayNameLabel Unicode 但保留正则 Unicode 范围", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": String.raw`<template><kd-input :title="displayNameLabel('\u4e2d\u6587\u540d')"></kd-input></template><script>export default { data() { return { reg: /^[^\u4e00-\u9fa5 ]*$/, regText: "^[^\\u4e00-\\u9fa5 ]*$" }; } };</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名')"), `displayNameLabel 参数应还原中文，实际: ${result}`);
+  assert.ok(result.includes(String.raw`/^[^\u4e00-\u9fa5 ]*$/`), `正则 Unicode 范围应保留，实际: ${result}`);
+  assert.ok(result.includes(String.raw`"^[^\\u4e00-\\u9fa5 ]*$"`), `双反斜杠字符串应保留，实际: ${result}`);
+});
+
+test("cleanup 保留 RegExp 构造函数字符串中的 Unicode 范围", () => {
+  const projectRoot = createTempProject({
+    "src/test.js": String.raw`const title = displayNameLabel('\u4e2d\u6587\u540d');
+const sReg = new RegExp("^[^\u4e00-\u9fa5 ]*$");`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.js"), "utf8");
+  assert.ok(result.includes("displayNameLabel('中文名')"), `displayNameLabel 应还原中文，实际: ${result}`);
+  assert.ok(
+    result.includes(String.raw`new RegExp("^[^\u4e00-\u9fa5 ]*$")`),
+    `RegExp 构造函数字符串中的 Unicode 范围应保留，实际: ${result}`,
+  );
+});
+
+test("cleanup 展开嵌套 displayNameLabel 调用", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-input :placeholder="
+      displayNameLabel(
+        displayNameLabel('请输入中文名称', t('请输入显示名称')),
+        t('请输入显示名称'),
+      )
+    "></kd-input></template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes("displayNameLabel('请输入中文名称', t('请输入显示名称'))"),
+    `应保留单层 displayNameLabel，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("displayNameLabel(displayNameLabel"),
+    `不应保留嵌套 displayNameLabel，实际: ${result}`,
+  );
+});
+
+test("cleanup 还原 displayNameLabel 第一参数中的 t() 调用", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template>
+      <kd-column-text :p-l="\`chName,\${displayNameLabel(t('项目中文名称'), t('项目显示名称'))}\`"></kd-column-text>
+      <kd-input :title="displayNameLabel(t('中文名'))"></kd-input>
+    </template>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes("displayNameLabel('项目中文名称', t('项目显示名称'))"),
+    `第一参数应还原为中文字符串，第二参数应保留 t()，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("displayNameLabel('中文名')"),
+    `单参数 displayNameLabel 第一参数应还原，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("displayNameLabel(t("),
+    `displayNameLabel 第一参数不应保留 t()，实际: ${result}`,
+  );
+});
+
+test("cleanup 还原 this.displayNameLabel 第一参数中的 this.t() 调用", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>
+      export default {
+        methods: {
+          getLabel() {
+            return this.displayNameLabel(this.t("中文名"));
+          }
+        }
+      };
+    </script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes('this.displayNameLabel("中文名")'),
+    `this.displayNameLabel 第一参数应还原为中文字符串，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("this.displayNameLabel(this.t("),
+    `this.displayNameLabel 第一参数不应保留 this.t()，实际: ${result}`,
+  );
+});
+
+test("cleanup 还原 displayNameConfig 中文侧字段中的 this.t() 调用", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>
+      export default {
+        created() {
+          this.realNameConfig = this.displayNameConfig({
+            required: true,
+            chLabel: this.t("中文名"),
+            chPlaceholder: this.t("请输入中文名"),
+            chTip: this.t("请输入中文名"),
+            otherLabel: this.t("显示名称"),
+            otherPlaceholder: this.t("请输入显示名称"),
+            otherTip: this.t("请输入显示名称")
+          });
+        }
+      };
+    </script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes('chLabel: "中文名"'),
+    `chLabel 应保留中文原文，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('chPlaceholder: "请输入中文名"'),
+    `chPlaceholder 应保留中文原文，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('chTip: "请输入中文名"'),
+    `chTip 应保留中文原文，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('otherLabel: this.t("显示名称")'),
+    `otherLabel 应继续保留 t()，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('otherPlaceholder: this.t("请输入显示名称")'),
+    `otherPlaceholder 应继续保留 t()，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('otherTip: this.t("请输入显示名称")'),
+    `otherTip 应继续保留 t()，实际: ${result}`,
+  );
+  assert.ok(
+    !/\bch(?:Label|Placeholder|Tip):\s*this\.t\(/.test(result),
+    `中文侧字段不应被 this.t() 包裹，实际: ${result}`,
+  );
+});
+
+test("cleanup 对跳过 apply 的基础设施文件也还原中文侧字段中的 this.t()", () => {
+  const projectRoot = createTempProject({
+    "src/mixins/i18n-mixin.js": `export default { methods: { displayNameConfig() { return { chLabel: this.t("中文名称"), chPlaceholder: this.t("请输入中文名称"), chTip: this.t("请输入中文名称"), otherLabel: this.t("显示名称") }; } } };`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/mixins/i18n-mixin.js"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes('chLabel: "中文名称"'),
+    `基础设施文件 chLabel 应还原中文原文，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('chPlaceholder: "请输入中文名称"'),
+    `基础设施文件 chPlaceholder 应还原中文原文，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('chTip: "请输入中文名称"'),
+    `基础设施文件 chTip 应还原中文原文，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('otherLabel: this.t("显示名称")'),
+    `基础设施文件 otherLabel 应保留 t()，实际: ${result}`,
+  );
+});
+
+test("cleanup 还原 chLabel 默认参数中的 this.t()", () => {
+  const projectRoot = createTempProject({
+    "src/mixins/i18n-mixin.js": `export default { methods: { displayNameLabel(chLabel = this.t("中文名称"), otherLabel = this.t("显示名称")) { return chLabel; } } };`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/mixins/i18n-mixin.js"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes('displayNameLabel(chLabel = "中文名称", otherLabel = this.t("显示名称"))'),
+    `chLabel 默认参数应还原中文原文，实际: ${result}`,
+  );
+});
+
 test("el-form-item label 中的 t('中文名') 转换为 displayNameConfig 模式", () => {
   const projectRoot = createTempProject({
     "src/test.vue": "<template><el-form-item :label=\"t('中文名')\" prop=\"realName\"><kd-input v-model=\"form.realName\"></kd-input></el-form-item></template><script>export default { data() { return { form: {} }; } };</script>",
@@ -1041,6 +1247,43 @@ test("el-form-item prop 有 rules 时设置 required: true", () => {
   assert.ok(result.includes('required: true'), `prop 有 rules 时应设置 required: true，实际: ${result}`);
 });
 
+test("el-form-item displayNameConfig 保留原 rules 中的自定义 validator", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-form-item :label="t('中文名称')" prop="nameCh"><kd-input v-model="form.nameCh"></kd-input></el-form-item></template><script>export default { data() { const validateNameCh = async (rule, value, callback) => callback(); return { form: {}, rules: { nameCh: [this.mBlurRequired(this.t("请输入中文名称")), this.mValidateChinese(), { validator: validateNameCh, trigger: "blur" }], type: [this.mChangeRequired(this.t("请选择类型"))] } }; } };</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("nameChConfig.rules"), `应使用 nameChConfig.rules，实际: ${result}`);
+  assert.ok(result.includes("required: true"), `必填规则应映射为 required: true，实际: ${result}`);
+  assert.ok(result.includes("rules: [{ validator: this.validateNameCh, trigger: \"blur\" }]"), `自定义 validator 应追加到 displayNameConfig.rules，实际: ${result}`);
+  assert.ok(result.includes("async validateNameCh(rule, value, callback)"), `validateNameCh 应提升到 methods，实际: ${result}`);
+  assert.ok(!result.includes("const validateNameCh"), `data 中不应保留局部 validateNameCh，实际: ${result}`);
+  assert.ok(result.includes("type: [this.mChangeRequired"), `其他字段 rules 不应被删除，实际: ${result}`);
+  assert.ok(!result.includes("nameCh: ["), `旧 nameCh rules 应移除避免重复校验，实际: ${result}`);
+});
+
+test("cleanup 修复旧版 displayNameConfig 丢失的命名 validator", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-form-item :label="nameChConfig.label" prop="nameCh" :rules="nameChConfig.rules"><kd-input v-model="form.nameCh"></kd-input></el-form-item></template><script>export default { data() { const validateNameCh = async (rule, value, callback) => callback(); return { nameChConfig: {}, form: {}, rules: { type: [this.mChangeRequired(this.t("请选择类型"))] } }; }, created() { this.nameChConfig = this.displayNameConfig({ required: true }); } };</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('rules: [{ validator: this.validateNameCh, trigger: "blur" }]'), `旧版丢失的 validateNameCh 应补回，实际: ${result}`);
+  assert.ok(result.includes("async validateNameCh(rule, value, callback)"), `旧版局部 validateNameCh 应提升到 methods，实际: ${result}`);
+  assert.ok(!result.includes("const validateNameCh"), `data 中不应保留局部 validateNameCh，实际: ${result}`);
+});
+
+test("cleanup 修复旧版 displayNameConfig 中已存在 rules 的裸 validator 引用", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-form-item :label="nameChConfig.label" prop="nameCh" :rules="nameChConfig.rules"><kd-input v-model="form.nameCh"></kd-input></el-form-item></template><script>export default { data() { const validateNameCh = async (rule, value, callback) => callback(); return { nameChConfig: {}, form: {}, rules: { type: [this.mChangeRequired(this.t("请选择类型"))] } }; }, created() { this.nameChConfig = this.displayNameConfig({ required: true, rules: [{ validator: validateNameCh, trigger: "blur" }] }); }, methods: { submit() {} } };</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('rules: [{ validator: this.validateNameCh, trigger: "blur" }]'), `旧版裸 validator 应改为 this.validateNameCh，实际: ${result}`);
+  assert.ok(result.includes("async validateNameCh(rule, value, callback)"), `validateNameCh 应提升到 methods，实际: ${result}`);
+  assert.ok(!result.includes("const validateNameCh"), `data 中不应保留局部 validateNameCh，实际: ${result}`);
+});
+
 // ===== 中文名称子串匹配测试 =====
 
 test("kd-column-text p-l 中的 t('标签中文名称') 子串匹配转换为 displayNameLabel", () => {
@@ -1090,6 +1333,17 @@ test("script 中 this.t('标签中文名称') 子串匹配转换为 this.display
   applyI18n(projectRoot, CONFIG, { dryRun: false });
   const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
   assert.ok(result.includes("this.displayNameLabel('标签中文名称', this.t('标签显示名称'))"), `script 中应生成 this.displayNameLabel 带 otherLabel，实际: ${result}`);
+});
+
+test("script 中裸 t('中文名称') 不转换为未导入的 displayNameLabel", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>export default { props: { label: { type: String, default: "中文名称" } }, beforeRouteEnter(to, from, next) { to.meta.title = "标签中文名称"; next(); } };</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes('t("中文名称")'), `props default 中应保留裸 t()，实际: ${result}`);
+  assert.ok(result.includes('t("标签中文名称")'), `beforeRouteEnter 中应保留裸 t()，实际: ${result}`);
+  assert.ok(!result.includes("displayNameLabel"), `script 裸 t() 不应转换为 displayNameLabel，实际: ${result}`);
 });
 
 test("t('中文名称列表') 子串匹配转换为 displayNameLabel 带 otherLabel", () => {

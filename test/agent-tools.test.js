@@ -142,6 +142,22 @@ test("apply_i18n dryRun 不写入文件", () => {
   assert.ok(content.includes('"你好世界"'));
 });
 
+test("scaffold 工具执行后清理基础设施文件 Unicode 转义", () => {
+  const dir = createTempProject({
+    "src/mixins/i18n-mixin.js": String.raw`export default { methods: { displayNameLabel(chLabel = "\u4e2d\u6587\u540d\u79f0") { return chLabel; } } };`,
+  });
+  const tools = createTools(dir, CONFIG);
+  const scaffoldTool = tools.find((t) => t.name === "scaffold");
+  const result = scaffoldTool.execute({ force: false });
+  const content = fs.readFileSync(
+    path.join(dir, "src/mixins/i18n-mixin.js"),
+    "utf8",
+  );
+  assert.ok(result.cleanupSummary.cleanedFileCount >= 1);
+  assert.ok(content.includes('"中文名称"'), `应还原中文原文，实际: ${content}`);
+  assert.ok(!content.includes("\\u4e2d"), `不应残留 Unicode 转义，实际: ${content}`);
+});
+
 test("validate_translations 返回校验报告", () => {
   const dir = createTempProject({
     "src/languages/translates/default.json": JSON.stringify({

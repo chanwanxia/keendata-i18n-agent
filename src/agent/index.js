@@ -121,6 +121,7 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
     resume,
     estimatedTotal,
   });
+  const finalCleanup = cleanupProjectArtifacts(projectRoot, config);
 
   return {
     ok: result.ok,
@@ -133,13 +134,27 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
       translationFileReady: true,
     },
     repairs: {},
-    results: {},
+    results: {
+      finalCleanup,
+    },
   };
+}
+
+/**
+ * run 结束前统一清理最终落盘产物，兜底修复 scaffold/write_file/compile 后出现的转义或嵌套
+ * @param {string} projectRoot - 目标项目路径
+ * @param {object} config - i18n 配置
+ * @returns {object} cleanup 摘要
+ */
+function cleanupProjectArtifacts(projectRoot, config) {
+  const report = kit.cleanupI18n(projectRoot, config);
+  return report.summary;
 }
 
 module.exports = {
   runAgent,
   countSourceFiles,
+  cleanupProjectArtifacts,
   estimateTotalSteps,
   resolveMaxSteps,
 };

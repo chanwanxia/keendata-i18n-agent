@@ -417,7 +417,7 @@ apply 模块自动执行以下时区相关代码变换，确保时间处理与�
 **核心方法**（由 `i18nMixin` 通过 `Vue.mixin` 全局注册）：
 
 - `displayNameLabel(chLabel, otherLabel)` — 用于标签/列头/描述项。中文环境返回 `chLabel`，其他语言返回 `otherLabel`
-- `displayNameConfig(config)` — 用于表单项。返回 `{ isZh, label, placeholder, rules }`，中文环境额外添加 `mValidateChinese` 校验
+- `displayNameConfig(config)` — 用于表单项。返回 `{ isZh, label, placeholder, rules }`，中文环境额外添加 `mValidateChinese` 校验，并支持通过 `config.rules` 追加自定义校验
 
 **非组件场景**：`src/utils/i18n.js` 导出独立的 `displayNameLabel` 函数，供 API 层、工具函数等非组件 JS 使用。
 
@@ -438,7 +438,8 @@ apply 模块自动执行以下时区相关代码变换，确保时间处理与�
 1. 将 `:label` 替换为 `:label="propConfig.label"`，添加 `:rules="propConfig.rules"`
 2. 在 `data()` return 中注入 `propConfig: {}`
 3. 在 `created()` 中注入 `this.propConfig = this.displayNameConfig(...)`
-4. 若 `prop` 在 `rules` 对象中有规则定义，自动设置 `required: true` 并移除旧规则
+4. 若 `prop` 在 `rules` 对象中有必填规则，自动设置 `required: true`
+5. 旧 rules 中的 `mBlurRequired`/`mChangeRequired` 和 `mValidateChinese` 交由 `displayNameConfig` 生成；其他自定义规则（如 `{ validator: validateNameCh, trigger: "blur" }`）会追加到 `displayNameConfig({ rules: [...] })`
 
 **otherLabel 生成规则**：将文本中的"中文名称"替换为"显示名称"，再将剩余的"中文名"替换为"显示名称"。
 

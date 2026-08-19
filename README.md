@@ -437,7 +437,7 @@ kd-i18n run --max-steps 100
 | parseTime() | `parseTime()` → `parseTime(this.tzNewDate())`（仅无参） |
 | dayjs() | `dayjs()` → `this.$i18nNow()`（仅无参） |
 | 中文名称接入 | t('中文名') → `displayNameLabel('中文名')`；t('标签中文名称') → `displayNameLabel('标签中文名称', t('标签显示名称'))` |
-| el-form-item label | 含中文名的 label → `displayNameConfig` 模式（自动注入 data/created 配置） |
+| el-form-item label | 含中文名的 label → `displayNameConfig` 模式；内置必填/中文校验由 config 生成，自定义 validator 通过 `rules: [...]` 保留 |
 
 不改写的内容：注释、console 调用、已包裹的 t() 调用、import/export 语句、对象属性 key、Directive、`new Date("xxx")` 等带参数调用。
 

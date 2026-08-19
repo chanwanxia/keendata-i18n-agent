@@ -378,11 +378,13 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   const baseUrl =
     process.env["LLM_BASE_URL"] || "http://router.keendata.net:5343/v1";
   const model = process.env["LLM_MODEL"] || "gpt-5.5";
-  const client = new OpenAI({
-    baseURL: baseUrl,
-    apiKey,
-    maxRetries: resolveLlmMaxRetries(),
-  });
+  const client =
+    options.client ||
+    new OpenAI({
+      baseURL: baseUrl,
+      apiKey,
+      maxRetries: resolveLlmMaxRetries(),
+    });
   const translationPath = path.join(projectRoot, config.translationFile);
 
   if (!fs.existsSync(translationPath)) {
@@ -435,6 +437,10 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
 
   const batchSize = 50;
   const sourceTexts = [...new Set(missingEntries.map((e) => e.sourceText))];
+  const missingKeySet = new Set(
+    missingEntries.map((entry) => `${entry.sourceText}\u0000${entry.language}`),
+  );
+  const savedKeySet = new Set();
   const totalBatches = Math.ceil(sourceTexts.length / batchSize);
   const batchConcurrency = resolveLlmBatchConcurrency();
   let translatedCount = 0;
@@ -445,7 +451,7 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     const groupEnd = Math.min(gi + batchConcurrency, totalBatches);
 
     console.log(
-      `[i18n-kit] LLM 翻译进度: 批次 ${gi + 1}-${groupEnd}/${totalBatches} (${sourceTexts.length} 条待翻译)`,
+      `[i18n-kit] LLM 翻译进度: 批次 ${gi + 1}-${groupEnd}/${totalBatches} (${sourceTexts.length} 条源文，${missingEntries.length} 个缺失翻译)`,
     );
 
     // 按配置并发发送当前组的所有批次
@@ -467,13 +473,21 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
 
     // 同步应用翻译结果到 translations 对象
     let groupTranslated = 0;
+    let groupTranslatedSourceCount = 0;
+    const groupTranslatedSources = new Set();
     settled.forEach(({ results }) => {
       results.forEach((result) => {
         const item = translations[result.source];
         if (!item || typeof item !== "object") return;
         targetLanguages.forEach((lang) => {
+          const missingKey = `${result.source}\u0000${lang}`;
+          if (!missingKeySet.has(missingKey) || savedKeySet.has(missingKey)) {
+            return;
+          }
           if (result[lang] && typeof result[lang] === "string") {
             item[lang] = result[lang];
+            savedKeySet.add(missingKey);
+            groupTranslatedSources.add(result.source);
             groupTranslated += 1;
             translatedCount += 1;
           }
@@ -481,6 +495,7 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
       });
       completedBatches += 1;
     });
+    groupTranslatedSourceCount = groupTranslatedSources.size;
 
     // 每组完成后立即写入文件，中断后只丢失当前组
     if (groupTranslated > 0) {
@@ -490,7 +505,7 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
         "utf8",
       );
       console.log(
-        `[i18n-kit] LLM 翻译: 已保存 ${translatedCount}/${missingEntries.length} 条翻译 (${completedBatches}/${totalBatches} 批次完成)`,
+        `[i18n-kit] LLM 翻译: 已保存 ${translatedCount}/${missingEntries.length} 个缺失翻译，本批覆盖 ${groupTranslatedSourceCount} 条源文 (${completedBatches}/${totalBatches} 批次完成)`,
       );
     }
   }
@@ -501,7 +516,9 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     executed: true,
     translatedCount,
     remainingCount: missingEntries.length - translatedCount,
-    message: `LLM 翻译完成: ${translatedCount}/${missingEntries.length} 条已翻译`,
+    sourceTextCount: sourceTexts.length,
+    missingEntryCount: missingEntries.length,
+    message: `LLM 翻译完成: ${translatedCount}/${missingEntries.length} 个缺失翻译已保存`,
   };
 }
 
@@ -577,11 +594,11 @@ async function callLlmTranslate(
 
 /**
  * 生成回退翻译（返回空字符串让 validate 检测到缺失）
- * @param {string} sourceText - 源文本
- * @param {string} language - 目标语言
+ * @param {string} _sourceText - 源文本
+ * @param {string} _language - 目标语言
  * @returns {string} 空字符串
  */
-function buildFallbackTranslation(sourceText, language) {
+function buildFallbackTranslation(_sourceText, _language) {
   return "";
 }
 

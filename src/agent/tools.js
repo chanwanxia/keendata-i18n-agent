@@ -114,9 +114,11 @@ function createTools(projectRoot, config) {
       execute(args) {
         const profile = kit.detectProjectProfile(projectRoot);
        const report = kit.scaffold(projectRoot, profile, config, { force: Boolean(args.force) });
+       const cleanupReport = kit.cleanupI18n(projectRoot, config);
         return {
           ok: true,
           summary: report.summary,
+          cleanupSummary: cleanupReport.summary,
           created: report.created,
         };
       },

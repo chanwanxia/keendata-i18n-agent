@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { injectPackageJson, injectVueConfig } = require("../src/kit/inject");
+const { injectPackageJson } = require("../src/kit/inject");
 
 /**
  * 创建临时项目

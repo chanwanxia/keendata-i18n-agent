@@ -95,6 +95,20 @@ function isDisplayNameLabelCallee(callee) {
 }
 
 /**
+ * 判断源码位置是否位于 Vue SFC 的 script 块中
+ * @param {string} code - 完整 Vue 源码
+ * @param {number} pos - 待检测的位置
+ * @returns {boolean} 是否在 script 块内
+ */
+function isInsideScriptBlock(code, pos) {
+  const before = code.substring(0, pos);
+  const scriptStart = before.lastIndexOf("<script");
+  if (scriptStart === -1) return false;
+  const scriptEnd = before.lastIndexOf("</script>");
+  return scriptStart > scriptEnd;
+}
+
+/**
  * Step 1: 将 t('...含中文名...') 替换为 displayNameLabel(...)
  * 匹配 t('...') 或 t("...")，参数中含有"中文名"或"中文名称"
  * 同时匹配 this.t(...) 中的 t(...) 部分（this. 前缀自然保留）
@@ -121,6 +135,9 @@ function transformTCallDisplayName(result) {
     // 判断是否在 script 上下文（this.t 前缀）
     const beforeMatch = code.substring(Math.max(0, matchStart - 10), matchStart);
     const inScript = /this\.$/.test(beforeMatch);
+    // script 中裸 t() 常见于 props default / beforeRouteEnter 等 this 不可用场景，
+    // 不能转换为未导入的裸 displayNameLabel()。
+    if (!inScript && isInsideScriptBlock(code, matchStart)) continue;
     const callSource = buildDisplayNameLabelCall(fullText, inScript);
     code = code.substring(0, matchStart) + callSource + code.substring(matchEnd);
     tCallPattern.lastIndex = matchStart + callSource.length;
@@ -146,6 +163,479 @@ function transformStaticLabelDisplayName(result) {
     },
   );
   return { code, replacements };
+}
+
+/**
+ * 在源码中查找指定字段的 rules 数组，并返回可删除范围和应保留的自定义规则
+ * @param {string} code - 当前源码
+ * @param {string} propName - 表单字段名
+ * @returns {object|null} rules 信息
+ */
+function extractPropRulesInfo(code, propName) {
+  let searchIndex = 0;
+  let rulesObject = findRulesObject(code, searchIndex);
+
+  while (rulesObject) {
+    const body = code.slice(rulesObject.bodyStart, rulesObject.bodyEnd);
+    const propPattern = new RegExp(
+      `(^|[\\n,{])([ \\t]*)(["']?${escapeRegExp(propName)}["']?)\\s*:`,
+      "m",
+    );
+    const propMatch = propPattern.exec(body);
+    if (propMatch) {
+      const propStart = rulesObject.bodyStart + propMatch.index;
+      let arrayStart =
+        rulesObject.bodyStart + propMatch.index + propMatch[0].length;
+      while (/\s/.test(code[arrayStart])) arrayStart += 1;
+      if (code[arrayStart] !== "[") return null;
+
+      const arrayEnd = findMatchingBracket(code, arrayStart, "[", "]");
+      if (arrayEnd === -1) return null;
+
+      let removeEnd = arrayEnd + 1;
+      while (/\s/.test(code[removeEnd])) removeEnd += 1;
+      if (code[removeEnd] === ",") removeEnd += 1;
+
+      const arrayInner = code.slice(arrayStart + 1, arrayEnd);
+      const rules = splitTopLevelItems(arrayInner);
+      const customRules = rules.filter((rule) => !isDisplayNameBuiltinRule(rule));
+
+      return {
+        required: rules.some((rule) => isRequiredRule(rule)),
+        customRules,
+        removeStart: propStart,
+        removeEnd,
+      };
+    }
+
+    searchIndex = rulesObject.bodyEnd + 1;
+    rulesObject = findRulesObject(code, searchIndex);
+  }
+
+  return null;
+}
+
+/**
+ * 查找第一个 rules: { ... } 对象范围
+ * @param {string} code - 当前源码
+ * @param {number} startIndex - 起始查找位置
+ * @returns {object|null} rules 对象范围
+ */
+function findRulesObject(code, startIndex = 0) {
+  const match = /rules\s*:\s*\{/m.exec(code.slice(startIndex));
+  if (!match) return null;
+  const matchIndex = startIndex + match.index;
+  const braceStart = matchIndex + match[0].lastIndexOf("{");
+  const braceEnd = findMatchingBracket(code, braceStart, "{", "}");
+  if (braceEnd === -1) return null;
+  return {
+    bodyStart: braceStart + 1,
+    bodyEnd: braceEnd,
+  };
+}
+
+/**
+ * 查找成对括号的结束位置，跳过字符串字面量内部的括号
+ * @param {string} code - 当前源码
+ * @param {number} start - 起始括号位置
+ * @param {string} openChar - 开括号
+ * @param {string} closeChar - 闭括号
+ * @returns {number} 闭括号位置，未找到时返回 -1
+ */
+function findMatchingBracket(code, start, openChar, closeChar) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let i = start; i < code.length; i++) {
+    const char = code[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === openChar) depth += 1;
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 按顶层逗号拆分数组项，保留对象、函数调用等嵌套结构
+ * @param {string} source - 数组内部源码
+ * @returns {string[]} 顶层数组项
+ */
+function splitTopLevelItems(source) {
+  const items = [];
+  let current = "";
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (quote) {
+      current += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    if (char === ")" || char === "]" || char === "}") depth -= 1;
+    if (char === "," && depth === 0) {
+      if (current.trim()) items.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) items.push(current.trim());
+  return items;
+}
+
+/**
+ * 判断规则项是否应交由 displayNameConfig 内置生成
+ * @param {string} ruleSource - 单条规则源码
+ * @returns {boolean} 是否为内置规则
+ */
+function isDisplayNameBuiltinRule(ruleSource) {
+  return isRequiredRule(ruleSource) || /\bmValidateChinese\s*\(/.test(ruleSource);
+}
+
+/**
+ * 判断规则项是否为必填校验
+ * @param {string} ruleSource - 单条规则源码
+ * @returns {boolean} 是否为必填校验
+ */
+function isRequiredRule(ruleSource) {
+  return /\bm(?:Blur|Change)Required\s*\(/.test(ruleSource);
+}
+
+/**
+ * 转义正则字面量中的特殊字符
+ * @param {string} value - 原始文本
+ * @returns {string} 可用于 RegExp 的文本
+ */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 构建 displayNameConfig 初始化参数源码
+ * @param {object} options - 配置项
+ * @returns {string} 参数源码
+ */
+function buildDisplayNameConfigOptions({
+  required,
+  chLabel,
+  otherLabelKey,
+  customRules,
+}) {
+  const params = [];
+  if (required) params.push("required: true");
+  if (chLabel !== "中文名称" || otherLabelKey) {
+    params.push(`chLabel: "${chLabel}"`);
+  }
+  if (otherLabelKey) {
+    params.push(`otherLabel: this.t("${otherLabelKey}")`);
+  }
+  if (customRules.length > 0) {
+    params.push(`rules: [${customRules.join(", ")}]`);
+  }
+  return `{ ${params.join(", ")} }`;
+}
+
+/**
+ * 从自定义 rules 源码中提取未绑定 this 的 validator 方法名
+ * @param {string[]} customRules - 自定义规则源码列表
+ * @returns {string[]} validator 方法名列表
+ */
+function collectUnboundValidatorNames(customRules) {
+  const names = new Set();
+  const validatorPattern =
+    /\bvalidator\s*:\s*(?!this\.)([A-Za-z_$][\w$]*)/g;
+  customRules.forEach((rule) => {
+    let match;
+    while ((match = validatorPattern.exec(rule)) !== null) {
+      names.add(match[1]);
+    }
+  });
+  return [...names];
+}
+
+/**
+ * 将 rules 中的裸 validator 引用改为 created/methods 可访问的 this.validator
+ * @param {string[]} customRules - 自定义规则源码列表
+ * @returns {string[]} 转换后的规则源码列表
+ */
+function bindValidatorRulesToThis(customRules) {
+  return customRules.map((rule) =>
+    rule.replace(
+      /\bvalidator\s*:\s*(?!this\.)([A-Za-z_$][\w$]*)/g,
+      "validator: this.$1",
+    ),
+  );
+}
+
+/**
+ * 将 data() 内部的局部 validator 箭头函数提升为 Vue methods 方法
+ * @param {string} code - 当前源码
+ * @param {string[]} validatorNames - 需要提升的 validator 名称
+ * @returns {{ code: string, movedCount: number }}
+ */
+function promoteLocalValidatorsToMethods(code, validatorNames) {
+  let result = code;
+  const methodSources = [];
+
+  validatorNames.forEach((validatorName) => {
+    if (hasVueMethod(result, validatorName)) return;
+    const extracted = extractLocalValidator(result, validatorName);
+    if (!extracted) return;
+    result =
+      result.slice(0, extracted.removeStart) + result.slice(extracted.removeEnd);
+    methodSources.push(extracted.methodSource);
+  });
+
+  if (methodSources.length === 0) {
+    return { code: result, movedCount: 0 };
+  }
+
+  return {
+    code: insertVueMethods(result, methodSources),
+    movedCount: methodSources.length,
+  };
+}
+
+/**
+ * 判断 Vue options 中是否已经存在同名 method
+ * @param {string} code - 当前源码
+ * @param {string} methodName - 方法名
+ * @returns {boolean} 是否已存在
+ */
+function hasVueMethod(code, methodName) {
+  const methodsMatch = /methods\s*:\s*\{[\s\S]*?\n\s*\}/.exec(code);
+  if (!methodsMatch) return false;
+  return new RegExp(`\\b${escapeRegExp(methodName)}\\s*\\(`).test(
+    methodsMatch[0],
+  );
+}
+
+/**
+ * 收集局部 validator 前紧邻的行注释，提升到 methods 时一并移动
+ * @param {string} code - 当前源码
+ * @param {number} declarationStart - validator 声明起始位置
+ * @returns {{ removeStart: number, comments: string[] }} 注释信息
+ */
+function collectLeadingValidatorComments(code, declarationStart) {
+  const comments = [];
+  let removeStart = declarationStart;
+  let previousLineEnd = code.lastIndexOf("\n", declarationStart - 1);
+
+  while (previousLineEnd > 0) {
+    const previousLineStart = code.lastIndexOf("\n", previousLineEnd - 1) + 1;
+    const line = code.slice(previousLineStart, previousLineEnd);
+    if (!/^\s*\/\//.test(line)) break;
+    comments.unshift(line.trim());
+    removeStart = previousLineStart;
+    previousLineEnd = previousLineStart - 1;
+  }
+
+  return { removeStart, comments };
+}
+
+/**
+ * 提取 data() 里的局部 validator 箭头函数，并改写为 methods 方法源码
+ * @param {string} code - 当前源码
+ * @param {string} validatorName - validator 名称
+ * @returns {object|null} 提取结果
+ */
+function extractLocalValidator(code, validatorName) {
+  const pattern = new RegExp(
+    `\\bconst\\s+${escapeRegExp(validatorName)}\\s*=\\s*(async\\s*)?\\(([^)]*)\\)\\s*=>\\s*`,
+    "m",
+  );
+  const match = pattern.exec(code);
+  if (!match) return null;
+
+  const bodyStart = match.index + match[0].length;
+  const asyncKeyword = match[1] ? "async " : "";
+  const params = match[2].trim();
+  let body;
+  let removeEnd;
+
+  if (code[bodyStart] === "{") {
+    const closeBrace = findMatchingBracket(code, bodyStart, "{", "}");
+    if (closeBrace === -1) return null;
+    body = code.slice(bodyStart + 1, closeBrace).trimEnd();
+    removeEnd = closeBrace + 1;
+  } else {
+    const expressionEnd = code.indexOf(";", bodyStart);
+    if (expressionEnd === -1) return null;
+    const expression = code.slice(bodyStart, expressionEnd).trim();
+    body = `\n      return ${expression};`;
+    removeEnd = expressionEnd;
+  }
+
+  while (/\s/.test(code[removeEnd]) && code[removeEnd] !== "\n") removeEnd += 1;
+  if (code[removeEnd] === ";") removeEnd += 1;
+  if (code[removeEnd] === "\n") removeEnd += 1;
+
+  const leading = collectLeadingValidatorComments(code, match.index);
+  const commentSource =
+    leading.comments.length > 0
+      ? leading.comments.map((comment) => `    ${comment}`).join("\n")
+      : `    // ${validatorName} 自定义校验`;
+
+  return {
+    removeStart: leading.removeStart,
+    removeEnd,
+    methodSource: `${commentSource}\n    ${asyncKeyword}${validatorName}(${params}) {${body}\n    },`,
+  };
+}
+
+/**
+ * 将方法源码插入 Vue options 的 methods 中，缺失 methods 时自动创建
+ * @param {string} code - 当前源码
+ * @param {string[]} methodSources - 方法源码列表
+ * @returns {string} 插入后的源码
+ */
+function insertVueMethods(code, methodSources) {
+  const methodsSource = methodSources.join("\n");
+  if (/methods\s*:\s*\{/.test(code)) {
+    return code.replace(/methods\s*:\s*\{/, (match) => `${match}\n${methodsSource}`);
+  }
+
+  const methodBlock = `\n  methods: {\n${methodsSource}\n  },`;
+  if (/\n\s*created\s*\(\s*\)\s*\{/.test(code)) {
+    return code.replace(/(\n\s*created\s*\(\s*\)\s*\{)/, `${methodBlock}$1`);
+  }
+  if (/\n\s*computed\s*:/.test(code)) {
+    return code.replace(/(\n\s*computed\s*:)/, `${methodBlock}$1`);
+  }
+  if (/\n\s*watch\s*:/.test(code)) {
+    return code.replace(/(\n\s*watch\s*:)/, `${methodBlock}$1`);
+  }
+
+  const scriptEndIdx = code.lastIndexOf("</script>");
+  const searchEnd = scriptEndIdx === -1 ? code.length : scriptEndIdx;
+  const beforeScriptEnd = code.slice(0, searchEnd);
+  const lastBraceIdx = beforeScriptEnd.lastIndexOf("}");
+  if (lastBraceIdx === -1) return code;
+  return `${code.slice(0, lastBraceIdx)}${methodBlock}\n${code.slice(lastBraceIdx)}`;
+}
+
+/**
+ * 查找 this.xxxConfig = this.displayNameConfig({ ... }) 的参数对象范围
+ * @param {string} code - 当前源码
+ * @param {string} configName - 配置变量名
+ * @returns {object|null} 参数对象范围
+ */
+function findDisplayNameConfigAssignment(code, configName) {
+  const pattern = new RegExp(
+    `this\\.${escapeRegExp(configName)}\\s*=\\s*this\\.displayNameConfig\\(\\s*\\{`,
+  );
+  const match = pattern.exec(code);
+  if (!match) return null;
+
+  const bodyStart = match.index + match[0].length;
+  const openBrace = bodyStart - 1;
+  const bodyEnd = findMatchingBracket(code, openBrace, "{", "}");
+  if (bodyEnd === -1) return null;
+
+  let assignmentEnd = bodyEnd + 1;
+  while (/\s/.test(code[assignmentEnd])) assignmentEnd += 1;
+  if (code[assignmentEnd] === ")") assignmentEnd += 1;
+  if (code[assignmentEnd] === ";") assignmentEnd += 1;
+
+  return {
+    start: match.index,
+    bodyStart,
+    bodyEnd,
+    end: assignmentEnd,
+    body: code.slice(bodyStart, bodyEnd),
+  };
+}
+
+/**
+ * 修复旧版本已生成但丢失自定义 validator 的 displayNameConfig 初始化
+ * @param {string} code - 当前源码
+ * @param {string} configName - 配置变量名
+ * @param {string} propName - 表单字段名
+ * @returns {object} 修复结果
+ */
+function repairExistingDisplayNameConfigRules(code, configName, propName) {
+  const validatorName = `validate${propName.charAt(0).toUpperCase()}${propName.slice(1)}`;
+  if (!new RegExp(`\\b${escapeRegExp(validatorName)}\\b`).test(code)) {
+    return { changed: false, code };
+  }
+
+  let result = code;
+  const promoteResult = promoteLocalValidatorsToMethods(result, [validatorName]);
+  result = promoteResult.code;
+
+  const assignment = findDisplayNameConfigAssignment(result, configName);
+  if (!assignment) {
+    return {
+      changed: promoteResult.movedCount > 0,
+      code: result,
+    };
+  }
+
+  if (/\brules\s*:/.test(assignment.body)) {
+    const boundBody = assignment.body.replace(
+      new RegExp(`\\bvalidator\\s*:\\s*${escapeRegExp(validatorName)}\\b`, "g"),
+      `validator: this.${validatorName}`,
+    );
+    if (boundBody === assignment.body) {
+      return {
+        changed: promoteResult.movedCount > 0,
+        code: result,
+      };
+    }
+    return {
+      changed: true,
+      code:
+        result.slice(0, assignment.bodyStart) +
+        boundBody +
+        result.slice(assignment.bodyEnd),
+    };
+  }
+
+  const body = assignment.body.trim();
+  const separator = body ? `${assignment.body.trimEnd()}, ` : " ";
+  const replacement = `${separator}rules: [{ validator: this.${validatorName}, trigger: "blur" }] `;
+  return {
+    changed: true,
+    code:
+      result.slice(0, assignment.bodyStart) +
+      replacement +
+      result.slice(assignment.bodyEnd),
+  };
 }
 
 /**
@@ -217,37 +707,69 @@ function transformFormItemDisplayNameConfig(result, sfc) {
     formItemConfigs.push({ propName, configName, chLabel, otherLabelKey });
   }
 
+  formItemPattern.lastIndex = 0;
+  while ((match = formItemPattern.exec(code)) !== null) {
+    const attrs = match[1];
+    const labelMatch = attrs.match(/:label="(\w+Config)\.label"/);
+    if (!labelMatch) continue;
+
+    const propMatch = attrs.match(/\sprop="([^"]+)"/);
+    if (!propMatch) continue;
+
+    const configName = labelMatch[1];
+    if (formItemConfigs.some((item) => item.configName === configName)) {
+      continue;
+    }
+    formItemConfigs.push({
+      propName: propMatch[1],
+      configName,
+      chLabel: "中文名称",
+      otherLabelKey: null,
+    });
+  }
+
   // Step 4: 为 el-form-item 注入 displayNameConfig 初始化到 script
   if (formItemConfigs.length > 0) {
     formItemConfigs.forEach(({ configName, chLabel, otherLabelKey, propName }) => {
-      // 幂等性：config 已存在则跳过
-      if (new RegExp(`this\\.${configName}\\b`).test(code)) return;
+      // 幂等性：config 已存在时只尝试修复历史版本丢失的自定义 validator
+      if (new RegExp(`this\\.${configName}\\b`).test(code)) {
+        const repairResult = repairExistingDisplayNameConfigRules(
+          code,
+          configName,
+          propName,
+        );
+        if (repairResult.changed) {
+          code = repairResult.code;
+          replacements += 1;
+        }
+        return;
+      }
 
-      // 检测 prop 是否在 rules 对象中有规则定义（用于判断 required）
-      const hasRulesForProp = new RegExp(
-        `rules\\s*:\\s*\\{[\\s\\S]*?\\b${propName}\\s*:`,
-      ).test(code);
-      const requiredParam = hasRulesForProp ? "required: true, " : "";
+      const rulesInfo = extractPropRulesInfo(code, propName);
+      let customRules = rulesInfo ? rulesInfo.customRules : [];
+      const validatorNames = collectUnboundValidatorNames(customRules);
 
       // 当 prop 已在 rules 对象中定义，且 el-form-item 已改用 configName.rules 时，
-      // 从 rules 对象中移除该 prop 的旧规则定义（避免重复校验）
-      if (hasRulesForProp) {
-        const propRulesPattern = new RegExp(
-          `(\\n\\s*)${propName}\\s*:\\s*\\[[^\\]]*\\],?`,
-        );
-        code = code.replace(propRulesPattern, "");
+      // 从 rules 对象中移除该 prop 的旧规则定义，并将自定义规则合并到 displayNameConfig
+      if (rulesInfo) {
+        code =
+          code.slice(0, rulesInfo.removeStart) + code.slice(rulesInfo.removeEnd);
+      }
+      if (validatorNames.length > 0) {
+        const promoteResult = promoteLocalValidatorsToMethods(code, validatorNames);
+        code = promoteResult.code;
+        replacements += promoteResult.movedCount;
+        customRules = bindValidatorRulesToThis(customRules);
       }
 
       // 构建 config 初始化语句
-      let configStmt;
-      if (chLabel === "中文名称" && !otherLabelKey) {
-        configStmt = `this.${configName} = this.displayNameConfig({ ${requiredParam}});`;
-      } else if (otherLabelKey) {
-        configStmt = `this.${configName} = this.displayNameConfig({ ${requiredParam}chLabel: "${chLabel}", otherLabel: this.t("${otherLabelKey}") });`;
-      } else {
-        configStmt = `this.${configName} = this.displayNameConfig({ ${requiredParam}chLabel: "${chLabel}" });`;
-      }
-      const cleanStmt = configStmt.replace(/\{\s*,/, "{ ");
+      const configOptions = buildDisplayNameConfigOptions({
+        required: !!(rulesInfo && rulesInfo.required),
+        chLabel,
+        otherLabelKey,
+        customRules,
+      });
+      const cleanStmt = `this.${configName} = this.displayNameConfig(${configOptions});`;
 
       // 在 data() return 中添加 configName: {}
       const dataReturnPattern = /data\s*\(\s*\)\s*\{[\s\S]*?return\s*\{/;

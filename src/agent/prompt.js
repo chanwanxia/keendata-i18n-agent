@@ -93,7 +93,7 @@ translate 之后必须执行 validate，并检查结果：
     - 精确匹配（如 t('中文名')）→ displayNameLabel('中文名')（使用默认 otherLabel=t("显示名称")）
     - 子串匹配（如 t('标签中文名称')）→ displayNameLabel('标签中文名称', t('标签显示名称'))（将“中文名”替换为“显示名称”生成 otherLabel）
     - kd-column-text p-l、el-descriptions-item label、placeholder 等场景均自动处理
-    - el-form-item 的 label → 自动转为 displayNameConfig 模式（:label="propConfig.label" :rules="propConfig.rules"），并在 data() 和 created() 中注入配置初始化。中文名字段需要 mValidateChinese 校验，其他语言不需要
+    - el-form-item 的 label → 自动转为 displayNameConfig 模式（:label="propConfig.label" :rules="propConfig.rules"），并在 data() 和 created() 中注入配置初始化。中文名字段需要 mValidateChinese 校验，其他语言不需要；旧 rules 中的自定义 validator 必须通过 displayNameConfig({ rules: [...] }) 保留
     - script 中的 this.t('...中文名...') → this.displayNameLabel(...)，子串匹配时同样生成 this.t(otherLabel)
   - **手动检查**：apply 完成后，检查 el-form-item 的 displayNameConfig 是否需要补充 required: true（当字段为必填时）。如 prop 在 rules 对象中有规则定义，apply 会自动设置 required: true；否则需手动判断。
 - 翻译时保持 {} 占位符和 \${} 系统变量不变

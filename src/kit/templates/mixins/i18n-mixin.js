@@ -85,6 +85,7 @@ export const i18nMixin = {
           chTip: "请输入中文名称",
           otherTip: this.t("请输入显示名称"),
           required: false,
+          rules: [],
           debug: false,
         },
         config,
@@ -101,6 +102,9 @@ export const i18nMixin = {
         } else {
           obj.rules = [this.mBlurRequired(c.otherTip)];
         }
+      }
+      if (Array.isArray(c.rules) && c.rules.length > 0) {
+        obj.rules = obj.rules.concat(c.rules);
       }
       return obj;
     },

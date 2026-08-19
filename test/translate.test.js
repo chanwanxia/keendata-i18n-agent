@@ -40,7 +40,7 @@ test("glossary provider 填充已知术语", async () => {
   });
 
   const { translateTranslations } = require("../src/kit/translate");
-  const result = await translateTranslations(projectRoot, CONFIG, {
+  await translateTranslations(projectRoot, CONFIG, {
     provider: "glossary",
   });
 
@@ -73,6 +73,64 @@ test("LLM_API_KEY 未设置时回退 glossary", async () => {
   assert.ok(result.provider.used === "glossary", "应回退到 glossary");
 
   if (oldKey) process.env.LLM_API_KEY = oldKey;
+});
+
+test("LLM 翻译只保存缺失语言，不覆盖已有翻译或虚增计数", async () => {
+  const projectRoot = createTempProject({
+    特有文案: { en: "Keep existing", jp: "", ar: "" },
+  });
+  const oldKey = process.env.LLM_API_KEY;
+  process.env.LLM_API_KEY = "test-key";
+
+  const fakeClient = {
+    chat: {
+      completions: {
+        create: async (request) => {
+          const payload = JSON.parse(request.messages[1].content);
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    translations: payload.texts.map((source) => ({
+                      source,
+                      en: "SHOULD_NOT_OVERWRITE",
+                      jp: "Unique JP",
+                      ar: "Unique AR",
+                    })),
+                  }),
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  };
+
+  const { translateTranslations } = require("../src/kit/translate");
+  const result = await translateTranslations(
+    projectRoot,
+    { ...CONFIG, translate: { ...CONFIG.translate, provider: "llm" } },
+    { client: fakeClient },
+  );
+  const translations = JSON.parse(
+    fs.readFileSync(
+      path.join(projectRoot, "src/languages/translates/default.json"),
+      "utf8",
+    ),
+  );
+
+  assert.strictEqual(result.provider.translatedCount, 2);
+  assert.strictEqual(result.provider.remainingCount, 0);
+  assert.strictEqual(result.provider.missingEntryCount, 2);
+  assert.strictEqual(result.provider.sourceTextCount, 1);
+  assert.strictEqual(translations["特有文案"].en, "Keep existing");
+  assert.strictEqual(translations["特有文案"].jp, "Unique JP");
+  assert.strictEqual(translations["特有文案"].ar, "Unique AR");
+
+  if (oldKey) process.env.LLM_API_KEY = oldKey;
+  else delete process.env.LLM_API_KEY;
 });
 
 test("占位符校验检测不匹配", async () => {

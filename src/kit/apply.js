@@ -239,6 +239,9 @@ function transformVueFile(source, preset, config) {
   // 还原 LLM write_file 可能引入的 \uXXXX 转义序列为实际中文字符
   const beforeDeescape = code;
   code = deescapeUnicode(code);
+  code = unwrapNestedDisplayNameLabelCalls(code);
+  code = unwrapDisplayNameLabelFirstArgTranslate(code);
+  code = unwrapDisplayNameChineseFieldTranslate(code);
   if (code !== beforeDeescape) {
     changed = true;
   }
@@ -458,10 +461,15 @@ function transformTemplate(source, preset, config) {
     code = datePickerResult.code;
   }
 
-  const cleanedCode = unwrapNestedTranslateCalls(code);
+  const cleanedCode = unwrapNestedDisplayNameLabelCalls(
+    unwrapNestedTranslateCalls(code),
+  );
+  const normalizedCode = unwrapDisplayNameLabelFirstArgTranslate(cleanedCode);
+  const displayNameCode =
+    unwrapDisplayNameChineseFieldTranslate(normalizedCode);
 
   // 恢复被遮蔽的 HTML 注释（原样还原，不做任何修改）
-  let finalCode = cleanedCode;
+  let finalCode = displayNameCode;
   commentPlaceholders.forEach((comment, i) => {
     finalCode = finalCode.replace(`\x00CMT${i}\x00`, comment);
   });
@@ -769,19 +777,140 @@ function splitByTopLevelCommas(str) {
  * @returns {string} 还原后的源码
  */
 function deescapeUnicode(code) {
-  // 将字符串字面量中的 \uXXXX 转义还原为实际字符，但跳过正则表达式字面量
-  // 正则中的 \u4e00 等是正则语法，还原为实际字符会改变其含义
-  // 策略：按正则字面量 /.../ 分段，只处理非正则部分
-  const parts = code.split(/(\/[^/\n]+\/[gimsuy]*)/);
-  return parts
-    .map((part, i) => {
-      // 奇数索引为正则字面量，跳过
-      if (i % 2 === 1) return part;
-      return part.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
-        String.fromCharCode(parseInt(hex, 16)),
-      );
-    })
-    .join("");
+  let result = "";
+  let quote = null;
+  let escaped = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let inRegex = false;
+  let inRegexClass = false;
+  let preserveUnicodeInQuote = false;
+
+  for (let i = 0; i < code.length; i += 1) {
+    const char = code[i];
+    const next = code[i + 1];
+
+    if (!inRegex && !preserveUnicodeInQuote && canDecodeUnicodeEscape(code, i)) {
+      result += String.fromCharCode(parseInt(code.slice(i + 2, i + 6), 16));
+      i += 5;
+      escaped = false;
+      continue;
+    }
+
+    result += char;
+
+    if (inLineComment) {
+      if (char === "\n") inLineComment = false;
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (char === "*" && next === "/") {
+        result += next;
+        i += 1;
+        inBlockComment = false;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+        preserveUnicodeInQuote = false;
+      }
+      continue;
+    }
+
+    if (inRegex) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "[") {
+        inRegexClass = true;
+      } else if (char === "]") {
+        inRegexClass = false;
+      } else if (char === "/" && !inRegexClass) {
+        inRegex = false;
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      result += next;
+      i += 1;
+      inLineComment = true;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      result += next;
+      i += 1;
+      inBlockComment = true;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      preserveUnicodeInQuote = isRegExpConstructorStringStart(code, i);
+      continue;
+    }
+
+    if (char === "/" && isLikelyRegexStart(code, i)) {
+      inRegex = true;
+      inRegexClass = false;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 判断字符串是否是 RegExp(...) 的模式参数，避免反转义正则 Unicode 范围
+ * @param {string} code - 源码
+ * @param {number} quoteIndex - 字符串起始引号索引
+ * @returns {boolean} 是否为 RegExp 构造参数字符串
+ */
+function isRegExpConstructorStringStart(code, quoteIndex) {
+  const before = code.slice(Math.max(0, quoteIndex - 40), quoteIndex);
+  return /(?:new\s+)?RegExp\s*\(\s*$/.test(before);
+}
+
+/**
+ * 判断当前位置是否是可还原的单层 Unicode 转义
+ * @param {string} code - 源码
+ * @param {number} index - 当前索引
+ * @returns {boolean} 是否可还原
+ */
+function canDecodeUnicodeEscape(code, index) {
+  if (code[index] !== "\\" || code[index + 1] !== "u") return false;
+  if (!/^[0-9a-fA-F]{4}$/.test(code.slice(index + 2, index + 6))) return false;
+
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && code[i] === "\\"; i -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 0;
+}
+
+/**
+ * 粗略判断 / 是否为 JS 正则字面量起点，避免破坏正则中的 \u4e00-\u9fa5
+ * @param {string} code - 源码
+ * @param {number} index - / 的索引
+ * @returns {boolean} 是否像正则起点
+ */
+function isLikelyRegexStart(code, index) {
+  let i = index - 1;
+  while (i >= 0 && /\s/.test(code[i])) i -= 1;
+  if (i < 0) return true;
+  const previous = code[i];
+  if ("([{=,:;!&|?+-*%^~".includes(previous)) return true;
+  const before = code.slice(Math.max(0, i - 8), i + 1);
+  return /\b(return|case|throw|typeof|delete|void|in|of)$/.test(before);
 }
 
 /**
@@ -1142,9 +1271,12 @@ function transformJsFile(source, options) {
   });
 
   if (patches.length === 0) {
-    const cleaned = unwrapNestedTranslateCalls(source);
-    if (cleaned !== source) {
-      return { changed: true, replacements: 0, code: cleaned };
+    const cleaned = unwrapDisplayNameLabelFirstArgTranslate(
+      unwrapNestedDisplayNameLabelCalls(unwrapNestedTranslateCalls(source)),
+    );
+    const normalized = unwrapDisplayNameChineseFieldTranslate(cleaned);
+    if (normalized !== source) {
+      return { changed: true, replacements: 0, code: normalized };
     }
     return { changed: false, replacements: 0, code: source };
   }
@@ -1157,7 +1289,10 @@ function transformJsFile(source, options) {
     code = injectTranslateImport(code);
   }
 
-  code = unwrapNestedTranslateCalls(code);
+  code = unwrapDisplayNameLabelFirstArgTranslate(
+    unwrapNestedDisplayNameLabelCalls(unwrapNestedTranslateCalls(code)),
+  );
+  code = unwrapDisplayNameChineseFieldTranslate(code);
 
   return {
     changed: true,
@@ -1641,6 +1776,7 @@ function shouldTransformStringLiteral(pathRef) {
   if (pathRef.parentPath.isExportDeclaration()) return false;
   // 正则表达式构造函数中的字符串不应被翻译（如 new RegExp("^[^一-龥 ]*$")）
   if (isRegExpConstructor(pathRef.parentPath)) return false;
+  if (isDisplayNameChineseFieldValue(pathRef)) return false;
   if (
     pathRef.parentPath.isObjectProperty({ key: pathRef.node }) &&
     !pathRef.parent.computed
@@ -1676,6 +1812,7 @@ function shouldTransformStringLiteral(pathRef) {
 function shouldTransformInlineStringLiteral(pathRef) {
   // 正则表达式构造函数中的字符串不应被翻译
   if (isRegExpConstructor(pathRef.parentPath)) return false;
+  if (isDisplayNameChineseFieldValue(pathRef)) return false;
   if (
     pathRef.parentPath.isMemberExpression({ property: pathRef.node }) &&
     !pathRef.parent.computed
@@ -1693,6 +1830,48 @@ function shouldTransformInlineStringLiteral(pathRef) {
         isConsoleCallee(parentPath.node.callee) ||
         isDisplayNameLabelCallee(parentPath.node.callee)),
   );
+}
+
+/**
+ * 判断字符串是否为 displayNameConfig 的中文侧原文配置
+ * @param {object} pathRef - Babel 路径引用
+ * @returns {boolean} 是否为中文侧原文配置值
+ */
+function isDisplayNameChineseFieldValue(pathRef) {
+  if (!pathRef.parentPath.isObjectProperty({ value: pathRef.node })) {
+    return isDisplayNameChineseFieldDefaultValue(pathRef);
+  }
+  const key = pathRef.parent.key;
+  return (
+    (t.isIdentifier(key) &&
+      isDisplayNameChineseField(key.name) &&
+      !pathRef.parent.computed) ||
+    (t.isStringLiteral(key) && isDisplayNameChineseField(key.value))
+  );
+}
+
+/**
+ * 判断字符串是否为 displayName 中文侧参数默认值
+ * @param {object} pathRef - Babel 路径引用
+ * @returns {boolean} 是否为中文侧参数默认值
+ */
+function isDisplayNameChineseFieldDefaultValue(pathRef) {
+  if (!pathRef.parentPath.isAssignmentPattern({ right: pathRef.node })) {
+    return false;
+  }
+  return (
+    t.isIdentifier(pathRef.parent.left) &&
+    isDisplayNameChineseField(pathRef.parent.left.name)
+  );
+}
+
+/**
+ * 判断字段名是否为 displayName 中文侧原文配置
+ * @param {string} name - 字段名
+ * @returns {boolean} 是否为中文侧原文字段
+ */
+function isDisplayNameChineseField(name) {
+  return ["chLabel", "chPlaceholder", "chTip"].includes(name);
 }
 
 /**
@@ -1848,6 +2027,239 @@ function unwrapNestedTranslateCalls(code) {
 }
 
 /**
+ * 展开历史遗留的 displayNameLabel(displayNameLabel(...), t(...)) 嵌套调用
+ * @param {string} code - 源码
+ * @returns {string} 修复后的源码
+ */
+function unwrapNestedDisplayNameLabelCalls(code) {
+  let result = code;
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    let searchIndex = 0;
+
+    while (searchIndex < result.length) {
+      const nameIndex = result.indexOf("displayNameLabel", searchIndex);
+      if (nameIndex === -1) break;
+      const parenStart = nameIndex + "displayNameLabel".length;
+      if (result[parenStart] !== "(") {
+        searchIndex = nameIndex + 1;
+        continue;
+      }
+
+      const callStart =
+        result.slice(Math.max(0, nameIndex - 5), nameIndex) === "this."
+          ? nameIndex - 5
+          : nameIndex;
+      const parenEnd = findMatchingDelimiter(result, parenStart, "(", ")");
+      if (parenEnd === -1) break;
+
+      const args = splitTopLevelArguments(result.slice(parenStart + 1, parenEnd));
+      const firstArg = args[0] ? args[0].trim() : "";
+      if (isCompleteDisplayNameLabelCall(firstArg)) {
+        result =
+          result.slice(0, callStart) + firstArg + result.slice(parenEnd + 1);
+        changed = true;
+        searchIndex = callStart + firstArg.length;
+        continue;
+      }
+
+      searchIndex = parenEnd + 1;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 将 displayNameLabel 第一参数中的 t('中文') 还原为原始中文字符串
+ * @param {string} code - 源码
+ * @returns {string} 修复后的源码
+ */
+function unwrapDisplayNameLabelFirstArgTranslate(code) {
+  let result = code;
+  let searchIndex = 0;
+
+  while (searchIndex < result.length) {
+    const nameIndex = result.indexOf("displayNameLabel", searchIndex);
+    if (nameIndex === -1) break;
+    const parenStart = nameIndex + "displayNameLabel".length;
+    if (result[parenStart] !== "(") {
+      searchIndex = nameIndex + 1;
+      continue;
+    }
+
+    const parenEnd = findMatchingDelimiter(result, parenStart, "(", ")");
+    if (parenEnd === -1) break;
+
+    const args = splitTopLevelArguments(result.slice(parenStart + 1, parenEnd));
+    const firstArg = args[0] ? args[0].trim() : "";
+    const unwrappedFirstArg = unwrapTranslateStringArgument(firstArg);
+    if (unwrappedFirstArg) {
+      const nextArgs = [unwrappedFirstArg, ...args.slice(1).map((arg) => arg.trim())];
+      const nextCall = `displayNameLabel(${nextArgs.join(", ")})`;
+      result =
+        result.slice(0, nameIndex) + nextCall + result.slice(parenEnd + 1);
+      searchIndex = nameIndex + nextCall.length;
+      continue;
+    }
+
+    searchIndex = parenEnd + 1;
+  }
+
+  return result;
+}
+
+/**
+ * 将 displayName 中文侧字段中的 t('中文') 还原为中文字符串
+ * @param {string} code - 源码
+ * @returns {string} 修复后的源码
+ */
+function unwrapDisplayNameChineseFieldTranslate(code) {
+  let result = code;
+  const chFieldPattern =
+    /\b(chLabel|chPlaceholder|chTip)\s*([:=])\s*(?:this\.)?t\s*\(/g;
+  let match;
+
+  while ((match = chFieldPattern.exec(result)) !== null) {
+    const parenStart = result.indexOf("(", match.index);
+    const parenEnd = findMatchingDelimiter(result, parenStart, "(", ")");
+    if (parenEnd === -1) break;
+
+    const callStart = result.lastIndexOf("t", parenStart);
+    const callSource = result.slice(callStart, parenEnd + 1);
+    const unwrapped = unwrapTranslateStringArgument(callSource);
+    if (!unwrapped) {
+      chFieldPattern.lastIndex = parenEnd + 1;
+      continue;
+    }
+
+    const fieldName = match[1];
+    const separator = match[2] === ":" ? ": " : " = ";
+    result =
+      result.slice(0, match.index) +
+      `${fieldName}${separator}` +
+      unwrapped +
+      result.slice(parenEnd + 1);
+    chFieldPattern.lastIndex =
+      match.index + `${fieldName}${separator}${unwrapped}`.length;
+  }
+
+  return result;
+}
+
+/**
+ * 提取 t('中文') 或 this.t("中文") 的单字符串参数源码
+ * @param {string} source - 参数源码
+ * @returns {string|null} 字符串参数源码
+ */
+function unwrapTranslateStringArgument(source) {
+  const match = /^(?:this\.)?t\s*\(/.exec(source);
+  if (!match) return null;
+  const parenStart = source.indexOf("(", match.index);
+  const parenEnd = findMatchingDelimiter(source, parenStart, "(", ")");
+  if (parenEnd !== source.length - 1) return null;
+
+  const args = splitTopLevelArguments(source.slice(parenStart + 1, parenEnd));
+  if (args.length !== 1) return null;
+  const stringSource = args[0].trim();
+  return /^(['"])(?:[^\\]|\\.)*\1$/.test(stringSource) ? stringSource : null;
+}
+
+/**
+ * 判断源码片段是否是完整的 displayNameLabel 调用
+ * @param {string} source - 源码片段
+ * @returns {boolean} 是否为完整 displayNameLabel 调用
+ */
+function isCompleteDisplayNameLabelCall(source) {
+  const match = /^(?:this\.)?displayNameLabel\s*\(/.exec(source);
+  if (!match) return false;
+  const parenStart = source.indexOf("(", match.index);
+  const parenEnd = findMatchingDelimiter(source, parenStart, "(", ")");
+  return parenEnd === source.length - 1;
+}
+
+/**
+ * 查找成对分隔符，跳过字符串内部内容
+ * @param {string} source - 源码
+ * @param {number} start - 起始分隔符索引
+ * @param {string} openChar - 开始字符
+ * @param {string} closeChar - 结束字符
+ * @returns {number} 结束分隔符索引
+ */
+function findMatchingDelimiter(source, start, openChar, closeChar) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (char === openChar) depth += 1;
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * 按顶层逗号拆分调用参数，保留嵌套调用和字符串内容
+ * @param {string} source - 参数源码
+ * @returns {string[]} 参数列表
+ */
+function splitTopLevelArguments(source) {
+  const args = [];
+  let current = "";
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      current += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      current += char;
+      continue;
+    }
+
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    if (char === ")" || char === "]" || char === "}") depth -= 1;
+    if (char === "," && depth === 0) {
+      if (current.trim()) args.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
+/**
  * 转义文本中的双引号和反斜杠
  * @param {string} text - 原始文本
  * @returns {string} 转义后的文本
@@ -1906,7 +2318,6 @@ function buildChangePreview(beforeCode, afterCode) {
 }
 
 /**
-/**
  * 从 Vue SFC 源码中提取 <script> 区域内容
  * @param {string} source - Vue 文件完整源码
  * @returns {string|null} script 内容，无 script 时返回 null
@@ -1941,11 +2352,31 @@ function cleanupI18n(projectRoot, config) {
 
   files.forEach((filePath) => {
     const relativePath = toRelative(projectRoot, filePath);
-    if (shouldSkipFile(relativePath, config)) return;
-
     const original = fs.readFileSync(filePath, "utf8");
     let code = original;
     let fixCount = 0;
+
+    // 先还原历史 run 或 LLM write_file 可能引入的 \uXXXX 转义序列。
+    // 基础设施文件虽然跳过 apply 改写，但仍需要参与反转义清理。
+    const beforeDeescape = code;
+    code = deescapeUnicode(code);
+    if (code !== beforeDeescape) fixCount += 1;
+
+    const beforeDisplayNameCleanup = code;
+    code = unwrapDisplayNameChineseFieldTranslate(
+      unwrapDisplayNameLabelFirstArgTranslate(
+        unwrapNestedDisplayNameLabelCalls(unwrapNestedTranslateCalls(code)),
+      ),
+    );
+    if (code !== beforeDisplayNameCleanup) fixCount += 1;
+
+    if (shouldSkipFile(relativePath, config)) {
+      if (fixCount > 0) {
+        fs.writeFileSync(filePath, code, "utf8");
+        cleanedFiles.push({ file: relativePath, fixCount });
+      }
+      return;
+    }
 
     // 0. 修复 beforeRouteEnter/props default 上下文中错误使用的 this.t() -> t()
     // 这些上下文中 this 不可用，之前的 run 可能错误地包裹为 this.t()
@@ -1959,10 +2390,10 @@ function cleanupI18n(projectRoot, config) {
       fixCount += noThisResult.fixCount;
     }
 
-    // 1. 展开嵌套 t(t('...'))
-    const beforeUnwrap = code;
-    code = unwrapNestedTranslateCalls(code);
-    if (code !== beforeUnwrap) fixCount += 1;
+    // 1. 兜底还原 displayName 中文侧字段，避免其它修复步骤后残留 t()
+    const beforeDisplayNameFieldCleanup = code;
+    code = unwrapDisplayNameChineseFieldTranslate(code);
+    if (code !== beforeDisplayNameFieldCleanup) fixCount += 1;
 
     // 2. 移除重复的 import { t } from "@/languages" 语句
     const importRegex =

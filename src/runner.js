@@ -393,6 +393,7 @@ function summarizeResult(result) {
  * @returns {object} 最终结果
  */
 function finalizeState(state, ok, message) {
+  state.results.finalCleanup = cleanupProjectArtifacts(state.projectRoot);
   return {
     ok,
     message,
@@ -405,6 +406,18 @@ function finalizeState(state, ok, message) {
   };
 }
 
+/**
+ * rule 模式结束前统一清理最终落盘产物，确保重复 run 后代码保持幂等干净
+ * @param {string} projectRoot - 目标项目根路径
+ * @returns {object} cleanup 摘要
+ */
+function cleanupProjectArtifacts(projectRoot) {
+  const config = kit.loadProjectConfig(projectRoot);
+  const report = kit.cleanupI18n(projectRoot, config);
+  return report.summary;
+}
+
 module.exports = {
+  cleanupProjectArtifacts,
   runAgent,
 };
