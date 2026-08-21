@@ -133,6 +133,76 @@ test("LLM 翻译只保存缺失语言，不覆盖已有翻译或虚增计数", a
   else delete process.env.LLM_API_KEY;
 });
 
+test("LLM 翻译会重翻源文残留和原文直出", async () => {
+  const projectRoot = createTempProject({
+    国际化设置: { en: "国际化设置", jp: "国際化設定", ar: "国际化设置" },
+    系统语言: { en: "System language", jp: "系统语言", ar: "لغة النظام" },
+  });
+  const oldKey = process.env.LLM_API_KEY;
+  process.env.LLM_API_KEY = "test-key";
+
+  const fakeClient = {
+    chat: {
+      completions: {
+        create: async (request) => {
+          const payload = JSON.parse(request.messages[1].content);
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    translations: payload.texts.map((source) => ({
+                      source,
+                      en:
+                        source === "国际化设置"
+                          ? "Internationalization Settings"
+                          : "System language",
+                      jp:
+                        source === "国际化设置"
+                          ? "国際化設定"
+                          : "システム言語",
+                      ar:
+                        source === "国际化设置"
+                          ? "إعدادات التدويل"
+                          : "لغة النظام",
+                    })),
+                  }),
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  };
+
+  const { translateTranslations } = require("../src/kit/translate");
+  const result = await translateTranslations(
+    projectRoot,
+    { ...CONFIG, translate: { ...CONFIG.translate, provider: "llm" } },
+    { client: fakeClient },
+  );
+  const translations = JSON.parse(
+    fs.readFileSync(
+      path.join(projectRoot, "src/languages/translates/default.json"),
+      "utf8",
+    ),
+  );
+
+  assert.strictEqual(result.provider.translatedCount, 3);
+  assert.strictEqual(result.provider.remainingCount, 0);
+  assert.strictEqual(result.provider.missingEntryCount, 3);
+  assert.strictEqual(translations["国际化设置"].en, "Internationalization Settings");
+  assert.strictEqual(translations["国际化设置"].jp, "国際化設定");
+  assert.strictEqual(translations["国际化设置"].ar, "إعدادات التدويل");
+  assert.strictEqual(translations["系统语言"].en, "System language");
+  assert.strictEqual(translations["系统语言"].jp, "システム言語");
+  assert.strictEqual(translations["系统语言"].ar, "لغة النظام");
+
+  if (oldKey) process.env.LLM_API_KEY = oldKey;
+  else delete process.env.LLM_API_KEY;
+});
+
 test("LLM 翻译批次进度串行时不显示冗余范围", () => {
   const { formatBatchProgressLabel } = require("../src/kit/translate");
 

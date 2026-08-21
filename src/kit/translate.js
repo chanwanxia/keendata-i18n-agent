@@ -4,6 +4,7 @@ const { getPresetById } = require("./presets");
 const { runShellCommand } = require("./shell");
 const {
   validateTranslationObject,
+  checkSourceTextLeakage,
   extractPlaceholders,
   isPlaceholderTranslation,
 } = require("./validate");
@@ -372,7 +373,7 @@ function formatBatchProgressLabel(startBatch, endBatch, totalBatches) {
  * 使用 LLM (OpenAI 兼容 API) 批量翻译 default.json 中缺失或无效的翻译。
  *
  * 设计要点：
- * - 增量检测：只翻译空翻译和占位式无效翻译，已有有效翻译保持不变
+ * - 增量检测：只翻译空翻译、占位式翻译和源文残留，已有有效翻译保持不变
  * - 批次并发：默认串行处理，可通过 LLM_BATCH_CONCURRENCY 调高并发
  * - 逐批写入：每完成一组并发批次就写入文件，中断后重新 run 只丢失当前组
  * - 幂等恢复：中断后重新 run 时，已写入的翻译会被跳过，不会重复翻译
@@ -429,16 +430,12 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     });
   }
 
-  // 检测需要翻译的条目：空翻译 + 占位式无效翻译（如 "Text 1"）
+  // 检测需要翻译的条目：空翻译 + 占位式无效翻译 + 源文残留
   const missingEntries = [];
   Object.entries(translations).forEach(([sourceText, item]) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return;
     targetLanguages.forEach((lang) => {
-      const value = item[lang];
-      if (typeof value !== "string" || value.trim() === "") {
-        missingEntries.push({ sourceText, language: lang });
-      } else if (isPlaceholderTranslation(value)) {
-        // 占位式无效翻译，清空并标记为需要重新翻译
+      if (needsLlmTranslation(sourceText, item, lang)) {
         item[lang] = "";
         missingEntries.push({ sourceText, language: lang });
       }
@@ -446,7 +443,13 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   });
 
   if (missingEntries.length === 0) {
-    return { ok: true, used: "llm", executed: true, translatedCount: 0, message: "无缺失翻译" };
+    return {
+      ok: true,
+      used: "llm",
+      executed: true,
+      translatedCount: 0,
+      message: "无缺失或无效翻译",
+    };
   }
 
   const batchSize = 50;
@@ -539,6 +542,21 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     missingEntryCount: missingEntries.length,
     message: `LLM 翻译完成: ${translatedCount}/${missingEntries.length} 个缺失翻译已保存`,
   };
+}
+
+/**
+ * 判断某个目标语言值是否需要交给 LLM 重翻。
+ * @param {string} sourceText - 中文源文 key
+ * @param {object} item - 当前词条对象
+ * @param {string} language - 目标语言
+ * @returns {boolean} 是否需要重翻
+ */
+function needsLlmTranslation(sourceText, item, language) {
+  const value = item[language];
+  if (typeof value !== "string" || value.trim() === "") return true;
+  if (isPlaceholderTranslation(value)) return true;
+  if (value === sourceText || value === item.zh) return true;
+  return Boolean(checkSourceTextLeakage(value, language));
 }
 
 /**

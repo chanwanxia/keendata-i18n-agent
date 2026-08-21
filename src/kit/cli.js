@@ -167,6 +167,7 @@ async function translateCommand(projectRoot, config, flags) {
     provider: flags.provider,
     appidEnv: flags.appidEnv,
     appkeyEnv: flags.appkeyEnv,
+    force: flags.force,
   });
 
   if (flags.json) {
@@ -270,6 +271,7 @@ async function runCommand(projectRoot, config, flags) {
       provider: flags.provider,
       appidEnv: flags.appidEnv,
       appkeyEnv: flags.appkeyEnv,
+      force: flags.force,
     });
     printTranslateReport(projectRoot, result.translate);
     if (!result.translate.ok) {
@@ -681,11 +683,11 @@ function printHelp() {
   --json          输出 JSON，便于 AI 或 CI 解析
   --dry-run       仅预览 apply 改动，不写入文件
   --strict        scan 模式发现疑似问题时返回非 0
-  --provider NAME 翻译 provider，可选 glossary / baidu / command
+  --provider NAME 翻译 provider，可选 llm / glossary / baidu / command
   --appid-env ENV 百度翻译 appid 的环境变量名
   --appkey-env ENV 百度翻译 appkey 的环境变量名
   --write-config  init 模式下写入 i18n-kit.config.json
-  --force         配合 --write-config 覆盖已有配置
+  --force         translate 模式强制清空已有翻译重翻；init 模式覆盖已有配置
   --no-apply      run 模式跳过 apply
   --no-extract    run 模式跳过 extract
   --no-translate  run 模式跳过 translate
