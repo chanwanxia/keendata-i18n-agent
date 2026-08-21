@@ -355,6 +355,20 @@ function resolveLlmBatchConcurrency() {
 }
 
 /**
+ * 格式化 LLM 翻译批次进度，串行时避免显示 1-1 这类冗余范围。
+ * @param {number} startBatch - 当前批次起点（从 1 开始）
+ * @param {number} endBatch - 当前批次终点（从 1 开始，包含）
+ * @param {number} totalBatches - 总批次数
+ * @returns {string} 批次进度文本
+ */
+function formatBatchProgressLabel(startBatch, endBatch, totalBatches) {
+  if (startBatch === endBatch) {
+    return `${startBatch}/${totalBatches}`;
+  }
+  return `${startBatch}-${endBatch}/${totalBatches}`;
+}
+
+/**
  * 使用 LLM (OpenAI 兼容 API) 批量翻译 default.json 中缺失或无效的翻译。
  *
  * 设计要点：
@@ -450,8 +464,13 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
   for (let gi = 0; gi < totalBatches; gi += batchConcurrency) {
     const groupEnd = Math.min(gi + batchConcurrency, totalBatches);
 
+    const batchProgress = formatBatchProgressLabel(
+      gi + 1,
+      groupEnd,
+      totalBatches,
+    );
     console.log(
-      `[i18n-kit] LLM 翻译进度: 批次 ${gi + 1}-${groupEnd}/${totalBatches} (${sourceTexts.length} 条源文，${missingEntries.length} 个缺失翻译)`,
+      `[i18n-kit] LLM 翻译进度: 批次 ${batchProgress} (${sourceTexts.length} 条源文，${missingEntries.length} 个缺失翻译)`,
     );
 
     // 按配置并发发送当前组的所有批次
@@ -631,6 +650,7 @@ function normalizePlaceholderTokens(translatedText, tokens) {
 }
 
 module.exports = {
+  formatBatchProgressLabel,
   resolveLlmBatchConcurrency,
   translateTranslations,
 };

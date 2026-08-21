@@ -45,15 +45,15 @@ function buildSystemPrompt(projectRoot, config) {
 9. compile — 编译语言包
 10. check_generated_files — 验证产物
 
-## 幂等性与重复运行
-
 ## doctor 修复策略
 
 doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提示，无需修复）。如果 doctor 返回 fail 项，必须修复后才能继续后续流程：
 - 文件缺失类 fail（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）：重新执行 scaffold 修复
 - 代码注入类 fail（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）：重新执行 inject 修复
-- 无法自动修复的 fail（kd-components-version 版本过低、global-cli 版本不匹配）：输出明确提示让用户手动处理，不阻塞其他修复
+- 无法自动修复的 fail（kd-components-version 版本过低、global-cli 版本不匹配）：先完成其他可自动修复项，再在最终结果中明确列出需要用户手动处理的项；这些 fail 未解决前不能宣称流程成功
 - 修复后重新执行 doctor 确认 fail 项已消除
+
+## 幂等性与重复运行
 
 - apply 和 inject 都是幂等的：重复执行不会产生重复包裹或重复注入
 - 如果重复 run 发现已有嵌套 t(t(...)) 或重复 import，cleanup_i18n 会自动修复
@@ -97,7 +97,7 @@ translate 之后必须执行 validate，并检查结果：
     - script 中的 this.t('...中文名...') → this.displayNameLabel(...)，子串匹配时同样生成 this.t(otherLabel)
   - **手动检查**：apply 完成后，检查 el-form-item 的 displayNameConfig 是否需要补充 required: true（当字段为必填时）。如 prop 在 rules 对象中有规则定义，apply 会自动设置 required: true；否则需手动判断。
 - 翻译时保持 {} 占位符和 \${} 系统变量不变
-- 如果多次重试仍无法解决某个问题，可以跳过该步骤继续后续流程，在最终报告中说明
+- 如果多次重试仍无法解决某个关键步骤（doctor / validate / compile / check_generated_files），必须停止并说明阻塞原因；不要跳过后继续宣称成功
 - 当所有步骤完成且满足成功标准时，直接回复总结（不需要调用工具）`;
 }
 

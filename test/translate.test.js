@@ -133,6 +133,14 @@ test("LLM 翻译只保存缺失语言，不覆盖已有翻译或虚增计数", a
   else delete process.env.LLM_API_KEY;
 });
 
+test("LLM 翻译批次进度串行时不显示冗余范围", () => {
+  const { formatBatchProgressLabel } = require("../src/kit/translate");
+
+  assert.strictEqual(formatBatchProgressLabel(1, 1, 11), "1/11");
+  assert.strictEqual(formatBatchProgressLabel(2, 2, 11), "2/11");
+  assert.strictEqual(formatBatchProgressLabel(1, 3, 11), "1-3/11");
+});
+
 test("占位符校验检测不匹配", async () => {
   const projectRoot = createTempProject({
     "操作{}失败": { en: "Operation failed", jp: "", ar: "" },

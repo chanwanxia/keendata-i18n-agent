@@ -219,7 +219,9 @@ async function executeAction(action, state, flags) {
    // 如果是 doctor 修复触发的重试，使用 force 重新注入
    const force = Boolean(state.repairs.injectRetried);
    state.results.inject = kit.inject(projectRoot, profile, config, { force });
-   console.log(`[i18n-agent] inject${force ? " (force)" : ""}: 依赖注入和代码改造完成`);
+   console.log(
+     `[i18n-agent] inject${force ? " (force)" : ""}: ${formatInjectSummary(state.results.inject)}`,
+   );
    return null;
   }
 
@@ -244,6 +246,9 @@ async function executeAction(action, state, flags) {
       projectRoot,
       profile,
       config,
+    );
+    console.log(
+      `[i18n-agent] doctor: ${state.results.doctor.summary.passCount} 通过, ${state.results.doctor.summary.warnCount} 警告, ${state.results.doctor.summary.failCount} 失败`,
     );
     return null;
   }
@@ -292,6 +297,7 @@ async function executeAction(action, state, flags) {
         appkeyEnv: flags.appkeyEnv,
       },
     );
+    console.log(`[i18n-agent] translate: ${formatTranslateSummary(state.results.translate)}`);
     return null;
   }
 
@@ -304,6 +310,9 @@ async function executeAction(action, state, flags) {
         provider: "none",
       },
     );
+    console.log(
+      `[i18n-agent] glossary_repair: ${formatTranslateSummary(state.results.translate)}`,
+    );
     return null;
   }
 
@@ -315,6 +324,9 @@ async function executeAction(action, state, flags) {
       generated,
       ok: report.ok && generated.ok,
     };
+    console.log(
+      `[i18n-agent] validate: ${report.summary.missingLanguageCount} 个缺失翻译, ${report.summary.issueCount} 个翻译问题, 产物${generated.ok ? "完整" : "缺失"}`,
+    );
     return null;
   }
 
@@ -342,6 +354,7 @@ async function executeAction(action, state, flags) {
    if (!state.results.compile.ok || !state.results.generated.ok) {
      return { stop: true, ok: false, message: "compile 执行失败或产物缺失" };
    }
+   console.log("[i18n-agent] compile: 编译成功，运行时产物检查通过");
  }
 
   return null;
@@ -417,7 +430,42 @@ function cleanupProjectArtifacts(projectRoot) {
   return report.summary;
 }
 
+/**
+ * 格式化 rule 模式 inject 执行摘要。
+ * @param {object} report - inject 报告
+ * @returns {string} 注入摘要
+ */
+function formatInjectSummary(report) {
+  const summary = report.summary || {};
+  const updatedCount = [
+    summary.packageJsonUpdated,
+    summary.mainJsUpdated,
+    summary.vueConfigUpdated,
+    summary.appVueUpdated,
+    summary.interceptorsUpdated,
+    summary.layoutHeaderUpdated,
+  ].filter(Boolean).length;
+  return updatedCount > 0
+    ? `注入/更新 ${updatedCount} 个接入点`
+    : "无需注入，接入点已是最新";
+}
+
+/**
+ * 格式化 rule 模式翻译执行摘要。
+ * @param {object} report - 翻译报告
+ * @returns {string} 翻译摘要
+ */
+function formatTranslateSummary(report) {
+  const summary = report.summary || {};
+  const provider = report.provider ? report.provider.used || "unknown" : "unknown";
+  const translatedCount = summary.translatedCount || summary.filledCount || 0;
+  const issueCount = summary.issueCount || 0;
+  return `保存/补齐 ${translatedCount} 个缺失翻译 (provider: ${provider}), ${issueCount} 个校验问题`;
+}
+
 module.exports = {
   cleanupProjectArtifacts,
+  formatInjectSummary,
+  formatTranslateSummary,
   runAgent,
 };

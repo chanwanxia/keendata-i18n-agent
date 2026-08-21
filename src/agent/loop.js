@@ -31,7 +31,7 @@ function formatToolResult(toolName, result) {
     case "read_file":
       return result.error
         ? `错误: ${result.error}`
-        : `读取 ${result.relativePath} (${result.content.length} 字符)`;
+        : `读取 ${result.relativePath} (${(result.content || "").length} 字符)`;
 
     case "write_file":
       return result.written
@@ -42,18 +42,23 @@ function formatToolResult(toolName, result) {
       return `列出 ${result.directory} 下 ${result.fileCount} 个文件`;
 
     case "scaffold":
-      return result.summary
-        ? `创建 ${result.summary.createdCount} 个文件, 跳过 ${result.summary.skippedCount} 个`
-        : "完成";
+      if (!result.summary) return "基础设施检查完成";
+      return [
+        `创建 ${result.summary.createdCount || 0} 个文件`,
+        `跳过 ${result.summary.skippedCount || 0} 个已存在文件`,
+        result.summary.postcssUpdated ? "更新 postcss 配置" : null,
+        result.summary.legacyCleaned ? "清理旧模板文件" : null,
+        result.summary.actionColumnWidthUpdated ? "补齐操作列宽度 helper" : null,
+        formatCleanupSuffix(result.cleanupSummary),
+      ]
+        .filter(Boolean)
+        .join(", ");
 
-    case "inject":
-    {
-      const s = result.summary || {};
-      const count = [
-        s.packageJsonUpdated, s.mainJsUpdated, s.vueConfigUpdated,
-        s.appVueUpdated, s.interceptorsUpdated, s.layoutHeaderUpdated,
-      ].filter(Boolean).length;
-      return `注入完成 (${count} 个文件)`;
+    case "inject": {
+      const count = countInjectUpdatedFiles(result);
+      return count > 0
+        ? `注入/更新 ${count} 个接入点`
+        : "无需注入，接入点已是最新";
     }
 
     case "doctor": {
@@ -68,12 +73,18 @@ function formatToolResult(toolName, result) {
 
     case "apply_i18n": {
       const s = result.summary || {};
-      return `改写 ${result.totalChangedFiles || 0} 个文件, ${s.replacementCount || 0} 处替换`;
+      const changedFileCount = s.changedFileCount || result.totalChangedFiles || 0;
+      return changedFileCount > 0
+        ? `改写 ${changedFileCount} 个文件, ${s.replacementCount || 0} 处替换`
+        : "无需改写，未发现可自动处理项";
     }
 
     case "cleanup_i18n": {
-      const s = result.summary || {};
-      return `清理 ${s.cleanedCount || (result.cleanedFiles ? result.cleanedFiles.length : 0)} 个文件`;
+      const fileCount = getCleanupFileCount(result.summary, result.cleanedFiles);
+      const fixCount = result.summary ? result.summary.totalFixes || 0 : 0;
+      return fileCount > 0
+        ? `清理 ${fileCount} 个文件, 修复 ${fixCount} 处历史问题`
+        : "无需清理，未发现历史遗留问题";
     }
 
     case "extract_entries":
@@ -83,7 +94,18 @@ function formatToolResult(toolName, result) {
       const s = result.summary || {};
       const provider = result.provider ? result.provider.used || "unknown" : "unknown";
       const count = s.translatedCount || s.filledCount || 0;
-      return `翻译 ${count} 条 (provider: ${provider})${(result.issues && result.issues.length) ? `, ${result.issues.length} 个问题` : ""}`;
+      const remaining =
+        result.provider && typeof result.provider.remainingCount === "number"
+          ? `, 剩余 ${result.provider.remainingCount} 个缺失翻译`
+          : "";
+      const issueSuffix =
+        result.issues && result.issues.length
+          ? `, ${result.issues.length} 个校验问题`
+          : "";
+      if (result.provider && result.provider.executed === false) {
+        return `未执行外部翻译 (provider: ${provider}), 本地补齐 ${count} 条${issueSuffix}`;
+      }
+      return `保存 ${count} 个缺失翻译 (provider: ${provider})${remaining}${issueSuffix}`;
     }
 
     case "validate_translations": {
@@ -101,7 +123,7 @@ function formatToolResult(toolName, result) {
     case "check_generated_files":
       return result.ok
         ? "运行时产物完整"
-        : `缺失 ${(result.missing || []).length} 个产物文件`;
+        : `缺失 ${(result.missingFiles || result.missing || []).length} 个产物文件`;
 
     case "run_shell":
       return result.ok
@@ -111,6 +133,53 @@ function formatToolResult(toolName, result) {
     default:
       return JSON.stringify(result).slice(0, 120);
   }
+}
+
+/**
+ * 读取 cleanup 摘要中的清理文件数，兼容不同工具返回形态。
+ * @param {object} summary - cleanup summary
+ * @param {object[]} cleanedFiles - 清理文件列表
+ * @returns {number} 清理文件数
+ */
+function getCleanupFileCount(summary, cleanedFiles) {
+  if (summary && typeof summary.cleanedFileCount === "number") {
+    return summary.cleanedFileCount;
+  }
+  if (summary && typeof summary.cleanedCount === "number") {
+    return summary.cleanedCount;
+  }
+  return cleanedFiles ? cleanedFiles.length : 0;
+}
+
+/**
+ * 统计 inject 工具实际更新的接入点数量。
+ * @param {object} result - inject 工具返回结果
+ * @returns {number} 更新数量
+ */
+function countInjectUpdatedFiles(result) {
+  const summary = result.summary || {};
+  const details = result.details || {};
+  return [
+    summary.packageJsonUpdated || (details.packageJson && details.packageJson.updated),
+    summary.mainJsUpdated || (details.mainJs && details.mainJs.updated),
+    summary.vueConfigUpdated || (details.vueConfig && details.vueConfig.updated),
+    summary.appVueUpdated || (details.appVue && details.appVue.updated),
+    summary.interceptorsUpdated ||
+      (details.interceptors && details.interceptors.updated),
+    summary.layoutHeaderUpdated ||
+      (details.layoutHeader && details.layoutHeader.updated),
+  ].filter(Boolean).length;
+}
+
+/**
+ * 格式化 scaffold 后附带的 cleanup 摘要。
+ * @param {object} summary - cleanup summary
+ * @returns {string|null} cleanup 摘要
+ */
+function formatCleanupSuffix(summary) {
+  const cleanedFileCount = getCleanupFileCount(summary);
+  if (cleanedFileCount <= 0) return null;
+  return `清理 ${cleanedFileCount} 个历史文件问题`;
 }
 
 /**
@@ -321,7 +390,7 @@ async function runAgentLoop(
       }
       return {
         ok: false,
-        message: `LLM 调用失败: ${err.message}`,
+        message: formatLlmFailureMessage(err, Boolean(projectRoot)),
         stepCount: step,
         timeline,
       };
@@ -385,7 +454,7 @@ async function runAgentLoop(
       const summary = formatToolResult(toolName, result);
       const stepDisplay =
         estimatedTotal > 0
-          ? `${step + 1}/${estimatedTotal}`
+          ? `${step + 1}/~${estimatedTotal}`
           : `${step + 1}`;
       console.log(
         `[i18n-agent] [${stepDisplay}] ${toolName} → ${summary} (${toolElapsed}s)`,
@@ -409,7 +478,7 @@ async function runAgentLoop(
         }
         return {
           ok: false,
-          message: `检测到连续 ${LOOP_DETECT_THRESHOLD} 次相同调用 (${toolName})，可能存在死循环，已自动停止。重新 run 可从此处继续。`,
+          message: `检测到连续 ${LOOP_DETECT_THRESHOLD} 次相同工具调用 (${toolName})，agent 已停止以避免重复改写。${formatResumeHint(Boolean(projectRoot))}`,
           stepCount: step + 1,
           timeline,
         };
@@ -431,16 +500,38 @@ async function runAgentLoop(
   }
 
   // 达到步数上限，checkpoint 已保存，重新 run 可继续
-  const resumeHint = projectRoot ? "重新 run 可从此处继续。" : "";
+  const resumeHint = formatResumeHint(Boolean(projectRoot));
   return {
     ok: false,
     message:
       maxSteps > 0
-        ? `超过最大步数 ${maxSteps}，agent 主动停止。${resumeHint}`
-        : `达到安全上限 ${SAFETY_CAP} 步，agent 主动停止。${resumeHint}`,
+        ? `已达到 --max-steps=${maxSteps}，流程尚未确认完成。${resumeHint}`
+        : `已达到安全上限 ${SAFETY_CAP} 步，流程尚未确认完成。${resumeHint}`,
     stepCount,
     timeline,
   };
+}
+
+/**
+ * 格式化 checkpoint 恢复提示。
+ * @param {boolean} hasCheckpoint - 是否存在可保存 checkpoint 的项目路径
+ * @returns {string} 恢复提示
+ */
+function formatResumeHint(hasCheckpoint) {
+  return hasCheckpoint
+    ? "已保存 checkpoint，重新执行 kd-i18n run 可继续；如需从头开始请加 --no-resume。"
+    : "当前未绑定项目路径，未保存 checkpoint。";
+}
+
+/**
+ * 格式化 LLM 调用失败提示，附带限流和恢复建议。
+ * @param {Error} error - LLM 调用错误
+ * @param {boolean} hasCheckpoint - 是否已保存 checkpoint
+ * @returns {string} 失败提示
+ */
+function formatLlmFailureMessage(error, hasCheckpoint) {
+  const reason = error && error.message ? error.message : "未知错误";
+  return `LLM 调用失败: ${reason}。请检查 LLM_API_KEY、网络或服务限流状态。${formatResumeHint(hasCheckpoint)}`;
 }
 
 module.exports = {
@@ -452,4 +543,5 @@ module.exports = {
   clearCheckpoint,
   getCheckpointPath,
   CHECKPOINT_DIR,
+  formatLlmFailureMessage,
 };

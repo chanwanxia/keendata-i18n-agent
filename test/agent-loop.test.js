@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { runAgentLoop } = require("../src/agent/loop");
+const { formatLlmFailureMessage, formatToolResult, runAgentLoop } = require("../src/agent/loop");
 
 /**
  * 创建 mock LLM client，按预设序列返回响应
@@ -207,7 +207,7 @@ test("超过最大步数时返回失败", async () => {
 
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.stepCount, 3);
-  assert.ok(result.message.includes("超过最大步数"));
+  assert.ok(result.message.includes("已达到 --max-steps=3"));
 });
 
 test("未知工具返回 error", async () => {
@@ -319,4 +319,46 @@ test("多个 tool_calls 在同一轮执行", async () => {
   assert.strictEqual(result.timeline.length, 2);
   assert.strictEqual(result.timeline[0].action, "add");
   assert.strictEqual(result.timeline[1].action, "mul");
+});
+
+test("formatToolResult 使用 inject details 统计更新接入点", () => {
+  const summary = formatToolResult("inject", {
+    ok: true,
+    details: {
+      packageJson: { updated: true },
+      mainJs: { updated: false },
+      vueConfig: { updated: true },
+      appVue: { updated: false },
+      interceptors: { updated: false },
+      layoutHeader: { updated: true },
+    },
+  });
+
+  assert.strictEqual(summary, "注入/更新 3 个接入点");
+});
+
+test("formatToolResult 正确展示 cleanup 和 generated 摘要字段", () => {
+  assert.strictEqual(
+    formatToolResult("cleanup_i18n", {
+      ok: true,
+      summary: { cleanedFileCount: 2, totalFixes: 5 },
+      cleanedFiles: [],
+    }),
+    "清理 2 个文件, 修复 5 处历史问题",
+  );
+  assert.strictEqual(
+    formatToolResult("check_generated_files", {
+      ok: false,
+      missingFiles: ["src/languages/index.js"],
+    }),
+    "缺失 1 个产物文件",
+  );
+});
+
+test("formatLlmFailureMessage 给出排查和恢复提示", () => {
+  const message = formatLlmFailureMessage(new Error("429 Too Many Requests"), true);
+
+  assert.ok(message.includes("LLM_API_KEY"));
+  assert.ok(message.includes("服务限流"));
+  assert.ok(message.includes("--no-resume"));
 });
