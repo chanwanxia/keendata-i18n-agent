@@ -251,6 +251,60 @@ test("HTML 注释中的中文不被转换", () => {
   );
 });
 
+test("kd-column-action 无 width 时自动补充操作栏宽度适配", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-column-action :btn-list="btnList" fixed="right"></kd-column-action></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(':width="getActionColumnWidth(btnList)"'),
+    `应补充操作栏自动宽度，实际: ${result}`,
+  );
+});
+
+test("kd-column-action 静态 width 转为自动宽度", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-column-action :btn-list="btnList" width="80"></kd-column-action></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(':width="getActionColumnWidth(btnList)"'),
+    `应改为纯自动宽度，实际: ${result}`,
+  );
+});
+
+test("kd-column-action getI18nWidth width 转为自动宽度且保持幂等", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-column-action :btn-list="btnList" :width="getI18nWidth('120, 180')" fixed="right"></kd-column-action></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  const matchCount = (result.match(/getActionColumnWidth/g) || []).length;
+  assert.strictEqual(matchCount, 1, `应保持幂等，实际: ${result}`);
+  assert.ok(
+    result.includes(':width="getActionColumnWidth(btnList)"'),
+    `应改为纯自动宽度，实际: ${result}`,
+  );
+});
+
 test("箭头函数属性中的已有 t() 不被破坏", () => {
   const projectRoot = createTempProject({
     "src/test.vue": `<template><kd-column-text :formatter="(value) => (value ? t('是') : t('否'))"></kd-column-text></template>`,

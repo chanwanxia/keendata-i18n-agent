@@ -43,7 +43,15 @@ function inspectProjectSetup(projectRoot, profile, config) {
     ),
   );
 checks.push(checkFileExists(projectRoot, rtlRules.styleFile, "rtl-style", "RTL 样式文件"));
-checks.push(checkFileContains(projectRoot, widthRules.file, /getI18nWidth/, "width-adaptation", "宽度适配 helper"));
+checks.push(
+  checkFileContains(
+    projectRoot,
+    widthRules.file,
+    /getI18nWidth[\s\S]*getActionColumnWidth|getActionColumnWidth[\s\S]*getI18nWidth/,
+    "width-adaptation",
+    "宽度适配 helper",
+  ),
+);
 const displayNameRules = preset.rules.displayName || {};
 checks.push(checkFileContains(projectRoot, displayNameRules.mixinFile, /displayNameLabel/, "display-name", "中文名称接入 helper"));
 checks.push(

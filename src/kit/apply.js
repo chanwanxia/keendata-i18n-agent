@@ -454,6 +454,13 @@ function transformTemplate(source, preset, config) {
     code = labelWidthResult.code;
   }
 
+  // kd-column-action 操作栏宽度自动适配：按当前语言按钮文案测量
+  const actionColumnWidthResult = transformActionColumnWidth(code);
+  if (actionColumnWidthResult.changed) {
+    replacements += actionColumnWidthResult.replacements;
+    code = actionColumnWidthResult.code;
+  }
+
   // el-date-picker type="datetime" → kd-date-picker（国际化时区组件替换）
   const datePickerResult = transformDatePickerComponent(code);
   if (datePickerResult.changed) {
@@ -1011,6 +1018,54 @@ function transformLabelWidthToAuto(code) {
     replacements,
     code: result,
   };
+}
+
+/**
+ * 将 kd-column-action 的 width 改为按 btn-list 文案自动计算
+ * @param {string} code - template 源码
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformActionColumnWidth(code) {
+  let replacements = 0;
+  const result = code.replace(
+    /<kd-column-action\b([^>]*)>/g,
+    (match, attrs) => {
+      if (/\bgetActionColumnWidth\s*\(/.test(attrs)) return match;
+      const btnListExpression = extractBoundAttribute(attrs, "btn-list");
+      if (!btnListExpression) return match;
+
+      const widthMatch = attrs.match(/\s((?::|v-bind:)?width)="([^"]*)"/);
+      if (!widthMatch) {
+        replacements += 1;
+        return match.replace(
+          /(\s*\/?>)$/,
+          ` :width="getActionColumnWidth(${btnListExpression})"$1`,
+        );
+      }
+      replacements += 1;
+      return match.replace(widthMatch[0], ` :width="getActionColumnWidth(${btnListExpression})"`);
+    },
+  );
+
+  return {
+    changed: replacements > 0,
+    replacements,
+    code: result,
+  };
+}
+
+/**
+ * 提取 Vue 模板中的绑定属性表达式，仅处理 :attr 和 v-bind:attr
+ * @param {string} attrs - 标签属性源码
+ * @param {string} name - 属性名
+ * @returns {string|null} 绑定表达式
+ */
+function extractBoundAttribute(attrs, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = attrs.match(
+    new RegExp(`\\s(?::|v-bind:)${escapedName}="([^"]+)"`),
+  );
+  return match ? match[1].trim() : null;
 }
 
 /**

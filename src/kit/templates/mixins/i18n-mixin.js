@@ -73,6 +73,68 @@ export const i18nMixin = {
       return width;
     },
 
+    // 根据操作栏按钮文案自动计算 kd-column-action 宽度
+    getActionColumnWidth(btnList = []) {
+      const buttons = Array.isArray(btnList) ? btnList : [];
+      const font = "12px PingFang SC, Microsoft YaHei, Arial, sans-serif";
+      const buttonGap = 8;
+      const cellPadding = 32;
+      const dropdownIconWidth = 24;
+      const fallbackLabelWidth = 48;
+      const safetyWidth = 12;
+      let contentWidth = 0;
+      let visibleCount = 0;
+      let hasDropdown = false;
+
+      buttons.forEach((item) => {
+        if (!item || item.show === false) return;
+        if (item.dropdown) {
+          hasDropdown = true;
+          return;
+        }
+        contentWidth += this.measureActionColumnTextWidth(
+          this.getActionColumnLabel(item),
+          font,
+          fallbackLabelWidth,
+        );
+        visibleCount += 1;
+      });
+
+      if (hasDropdown) {
+        contentWidth += dropdownIconWidth;
+        visibleCount += 1;
+      }
+
+      const gapWidth = Math.max(visibleCount - 1, 0) * buttonGap;
+      const width = Math.ceil(contentWidth + gapWidth + cellPadding + safetyWidth);
+      return `${ width }px`;
+    },
+
+    // 获取操作栏按钮用于宽度测量的文案，函数型 label 无法安全取值时使用兜底宽度
+    getActionColumnLabel(item) {
+      if (item.autoWidthLabel) return item.autoWidthLabel;
+      if (typeof item.label !== "function") return item.label || "";
+      try {
+        return item.label(null, item) || "";
+      } catch (error) {
+        return "";
+      }
+    },
+
+    // 使用 canvas 测量操作栏按钮文案宽度，非浏览器环境或空文案使用兜底宽度
+    measureActionColumnTextWidth(label, font, fallbackWidth) {
+      const text = String(label || "");
+      if (!text) return fallbackWidth;
+      if (typeof document === "undefined") return text.length * 12;
+      if (!this.__actionColumnMeasureCanvas) {
+        this.__actionColumnMeasureCanvas = document.createElement("canvas");
+      }
+      const context = this.__actionColumnMeasureCanvas.getContext("2d");
+      if (!context) return fallbackWidth;
+      context.font = font;
+      return Math.ceil(context.measureText(text).width);
+    },
+
     // "中文名称"接入配置
     displayNameConfig(config) {
       const c = Object.assign(

@@ -367,6 +367,8 @@ border-left ↔ border-right
 <el-form :label-width="getI18nWidth({ zh: '80px', en: '120px' })"></el-form>
 ```
 
+`kd-column-action` 统一按按钮文案自适应宽度，直接使用 `getActionColumnWidth(btnList)`，不再沿用现有 `width` 作为 `minWidth`。
+
 `getI18nWidth` 由 `Vue.mixin(i18nMixin)` 全局注册，所有组件可直接使用 `this.getI18nWidth()`。
 
 ### 4.10 el-form label-width 自动适配

@@ -178,6 +178,7 @@ const preset = {
   widthAdaptation: {
       file: "src/mixins/i18n-mixin.js",
      helper: "getI18nWidth",
+     actionColumnHelper: "getActionColumnWidth",
      languageOrder: ["zh", "en", "jp", "ar"],
     formats: ["comma-separated-sequence", "object-map"],
   },

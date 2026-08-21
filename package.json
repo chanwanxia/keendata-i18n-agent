@@ -1,6 +1,6 @@
 {
   "name": "@kd/i18n",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "description": "One-command i18n automation for KeenData Vue2 projects",
   "keywords": [
     "i18n",
@@ -29,8 +29,8 @@
     "openai": "^7.4.0"
   },
   "scripts": {
-    "lint": "eslint src/ test/ bin/",
-    "lint:fix": "eslint --fix src/ test/ bin/",
+    "lint": "sh -c 'if [ \"$1\" = \"fix\" ]; then shift; eslint --fix src/ test/ bin/ \"$@\"; else eslint src/ test/ bin/ \"$@\"; fi' --",
+    "lint:fix": "pnpm lint fix",
     "dev:help": "node bin/kd-i18n.js help",
     "test": "node --test test/",
     "prepublishOnly": "npm test",
@@ -48,7 +48,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "registry": "http://192.168.12.201:4873/"
   },
   "devDependencies": {
     "@voerkai18n/cli": "^2.1.13",

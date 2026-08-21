@@ -171,3 +171,38 @@ test("i18n-mixin 模板包含 displayName 方法", () => {
     "i18n-mixin.js 应包含 displayNameConfig 方法",
   );
 });
+
+test("scaffold 为已存在的 i18n-mixin 补充操作栏自动宽度 helper", () => {
+  const projectRoot = createTempProject();
+  const mixinPath = path.join(projectRoot, "src/mixins/i18n-mixin.js");
+  fs.mkdirSync(path.dirname(mixinPath), { recursive: true });
+  fs.writeFileSync(
+    mixinPath,
+    `export const i18nMixin = {
+  methods: {
+    getI18nWidth() {
+      return "auto";
+    },
+
+    // "中文名称"接入配置
+    displayNameLabel() {
+      return "";
+    },
+  },
+};
+`,
+  );
+
+  const result = scaffold(projectRoot, { packageName: "test" }, {});
+  const content = fs.readFileSync(mixinPath, "utf8");
+
+  assert.strictEqual(result.summary.actionColumnWidthUpdated, true);
+  assert.ok(
+    content.includes("getActionColumnWidth"),
+    "应补充 getActionColumnWidth",
+  );
+  assert.ok(
+    content.includes("displayNameLabel"),
+    "应保留既有 displayNameLabel",
+  );
+});
