@@ -8,7 +8,7 @@ One-command i18n automation for KeenData Vue2 projects. Scaffolds infrastructure
 
 - Vue 2.6+
 - element-ui
-- @kd/components
+- @kd/components 5.2.2+
 - vue-cli (vue.config.js)
 
 全局安装 voerkai18n CLI（版本必须 2.1.13，v3 不兼容）：
@@ -176,26 +176,24 @@ kd-i18n compile
 
 `kd-i18n run`（默认 LLM 模式）启动一个 tool-calling agent，LLM 自主决策并调用以下工具完成全流程：
 
-1. **cleanup_i18n** — 清理之前 run 可能遗留的问题（嵌套 t()、重复 import、格式问题）
-2. **scaffold** — 写入 i18n 基础设施文件（languages 目录、mixin、样式等）
-3. **inject** — 向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码
-4. **doctor** — 检查基建完整性
-5. **scan_chinese** — 扫描未被 t() 包裹的中文
-6. **apply_i18n** — 自动将中文包裹为 t() 调用（基于 AST）
-7. **extract_entries** — 执行 `voerkai18n extract` 提取词条
-8. **translate_entries** — LLM 翻译填充 default.json
-9. **validate_translations** — 校验翻译完整性和正确性
-10. **compile_languages** — 执行 `voerkai18n compile` 生成运行时语言包
-11. **check_generated_files** — 验证运行时产物是否齐全
+1. **scaffold** — 写入 i18n 基础设施文件（languages 目录、mixin、样式等）
+2. **inject** — 向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码
+3. **doctor** — 检查基建完整性
+4. **scan_chinese** — 扫描未被 t() 包裹的中文
+5. **apply_i18n** — 自动将中文包裹为 t() 调用（基于 AST）
+6. **extract_entries** — 执行 `voerkai18n extract` 提取词条
+7. **translate_entries** — LLM 翻译填充 default.json
+8. **validate_translations** — 校验翻译完整性和正确性
+9. **compile_languages** — 执行 `voerkai18n compile` 生成运行时语言包
+10. **check_generated_files** — 验证运行时产物是否齐全
 
 Agent 还拥有以下能力用于错误恢复和手动修复：
 
 - **read_file** — 读取目标项目任意文件内容
 - **write_file** — 写入/覆盖文件（如手动包裹 apply 覆盖不到的中文）
 - **list_files** — 列出目录下的文件
-- **run_shell** — 执行任意 shell 命令
 
-Agent 遇到工具返回错误时，会读取错误信息、分析问题、采取纠正措施并重试，而不是直接停止。成功标准：doctor 无 fail、scan 候选数为 0、validate 无缺失无问题、compile 成功、generated 文件齐全。
+Agent 遇到执行错误时会立即停止，不再继续调用工具、修改文件或执行最终清理；检查结果不通过则按流程回到对应修复步骤。成功标准：doctor 无 fail、scan 候选数为 0、validate 无缺失无问题、compile 成功、generated 文件齐全。
 
 ### 运行日志
 
@@ -203,12 +201,11 @@ agent 执行时输出友好的进度日志，格式为 `[step 当前/预估总�
 
 ```
 [i18n-agent] 自动步数模式（预估 ~71 步），将持续执行直到完成
-[i18n-agent] [1/~71] cleanup_i18n → 清理 3 个文件 (0.5s)
-[i18n-agent] [2/~71] scaffold → 创建 13 个文件, 跳过 0 个 (0.1s)
-[i18n-agent] [3/~71] inject → 注入完成 (5 个文件) (0.3s)
-[i18n-agent] [4/~71] doctor → 10 通过, 0 警告, 0 失败 (0.2s)
-[i18n-agent] [5/~71] scan_chinese → 发现 42 处待国际化文案 (253 个文件) (1.2s)
-[i18n-agent] [6/~71] apply_i18n → 改写 15 个文件, 87 处替换 (3.5s)
+[i18n-agent] [1/~71] scaffold → 创建 13 个文件, 跳过 0 个 (0.1s)
+[i18n-agent] [2/~71] inject → 注入完成 (5 个文件) (0.3s)
+[i18n-agent] [3/~71] doctor → 10 通过, 0 警告, 0 失败 (0.2s)
+[i18n-agent] [4/~71] scan_chinese → 发现 42 处待国际化文案 (253 个文件) (1.2s)
+[i18n-agent] [5/~71] apply_i18n → 改写 15 个文件, 87 处替换 (3.5s)
 ...
 [i18n-agent] 流程完成，共 12 步，耗时 45.3s
 ```
@@ -337,7 +334,7 @@ kd-i18n run --max-steps 100
 │   ├── policy.js                     # 规则引擎（rule 模式回退用）
 │   ├── agent/                        # LLM 驱动的 agent 核心
 │   │   ├── index.js                  # agent 入口：创建 client + 估算步数 + 启动 loop
-│   │   ├── tools.js                  # 14 个工具定义（文件操作 + kit 封装 + shell）
+│   │   ├── tools.js                  # 13 个工具定义（文件操作 + kit 封装）
 │   │   ├── prompt.js                 # system prompt 构建
 │   │   └── loop.js                   # tool-calling 循环（断点续传 + 上下文裁剪 + 循环检测 + 友好日志）
 │   └── kit/                          # CLI 工具库
@@ -381,7 +378,7 @@ kd-i18n run --max-steps 100
 | 模块 | 职责 |
 |---|---|
 | `src/agent/index.js` | 创建 OpenAI 兼容 client、凭证同步到 `process.env`、估算步数、加载 config、构建工具和 prompt、启动 loop |
-| `src/agent/tools.js` | 14 个工具：read_file / write_file / list_files / scaffold / inject / doctor / scan_chinese / apply_i18n / cleanup_i18n / extract_entries / translate_entries / validate_translations / compile_languages / check_generated_files / run_shell |
+| `src/agent/tools.js` | 13 个工具：read_file / write_file / list_files / scaffold / inject / doctor / scan_chinese / apply_i18n / extract_entries / translate_entries / validate_translations / compile_languages / check_generated_files |
 | `src/agent/prompt.js` | 构建 system prompt：角色定义、工作流程、错误恢复指令、文件编辑指令、成功标准 |
 | `src/agent/loop.js` | tool-calling 循环：调 LLM → 检查 tool_calls → 执行工具 → 喂回结果 → 再调，直到完成。支持断点续传、上下文裁剪、循环检测、友好日志 |
 
@@ -404,11 +401,20 @@ kd-i18n run --max-steps 100
 
 | 文件 | 改动 |
 |---|---|
-| `package.json` | 注入 @voerkai18n/* 依赖、postcss-rtlcss、i18n 脚本（跨 section 去重，已在 devDependencies 中的不会重复加到 dependencies） |
+| `package.json` | 注入 `@kd/components: "^5.2.2"`、@voerkai18n/* 依赖、postcss-rtlcss、i18n 脚本；每次 inject 自动刷新到 `5.x` 范围内最新版本 |
 | `src/main.js` | 注入 i18nPlugin、i18nMixin、样式引入 |
 | `vue.config.js` | 注入 voerkai18n-loader 规则 |
 | `src/App.vue` | 注入 i18nMixin、路由标题逻辑 |
 | `src/utils/interceptors-*.js` | 注入 Accept-Language / X-Timezone header（注入到请求成功回调，非错误回调） |
+
+`@kd/components` 使用 `^5.2.2` 版本范围：最低要求是 `5.2.2`，允许自动安装后续所有 `5.x` 版本。每次执行 `kd-i18n inject` 或自动流程的 inject 步骤时，都会执行：
+
+```bash
+pnpm add @kd/components@^5.2.2 --save-prod
+pnpm update @kd/components --prod
+```
+
+这样既不会升级到 `6.x`，又能在 `@kd/components` 发布新的 `5.x` 版本后自动刷新 lockfile 和实际安装版本。
 
 ## scan 扫描规则
 
@@ -496,5 +502,5 @@ voerkai18n --version
 
 - 安装依赖统一使用 `pnpm`
 - 新增方法必须补充功能注释（JSDoc）
-- 代码修改完成后执行 Lint 自动修复（`pnpm lint:fix`）
+- 代码修改完成后执行 Lint 自动修复（`pnpm lint fix`）
 - `@voerkai18n/cli` 版本必须锁定 `2.1.13`（v3 不兼容）

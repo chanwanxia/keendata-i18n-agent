@@ -219,6 +219,16 @@ async function executeAction(action, state, flags) {
    // 如果是 doctor 修复触发的重试，使用 force 重新注入
    const force = Boolean(state.repairs.injectRetried);
    state.results.inject = kit.inject(projectRoot, profile, config, { force });
+   if (!state.results.inject.ok) {
+     return {
+       stop: true,
+       ok: false,
+       message:
+         (state.results.inject.details.kdComponentsInstall &&
+           state.results.inject.details.kdComponentsInstall.message) ||
+         "依赖注入失败",
+     };
+   }
    console.log(
      `[i18n-agent] inject${force ? " (force)" : ""}: ${formatInjectSummary(state.results.inject)}`,
    );

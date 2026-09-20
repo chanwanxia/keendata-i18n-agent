@@ -50,7 +50,8 @@ function buildSystemPrompt(projectRoot, config) {
 doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提示，无需修复）。如果 doctor 返回 fail 项，必须修复后才能继续后续流程：
 - 文件缺失类 fail（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）：重新执行 scaffold 修复
 - 代码注入类 fail（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）：重新执行 inject 修复
-- 无法自动修复的 fail（kd-components-version 版本过低、global-cli 版本不匹配）：先完成其他可自动修复项，再在最终结果中明确列出需要用户手动处理的项；这些 fail 未解决前不能宣称流程成功
+- kd-components-version 由 inject 自动执行 pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod 修复；如果安装命令失败，必须立即停止并明确报告失败原因
+- 无法自动修复的 fail（global-cli 版本不匹配）：先完成其他可自动修复项，再在最终结果中明确列出需要用户手动处理的项；这些 fail 未解决前不能宣称流程成功
 - 修复后重新执行 doctor 确认 fail 项已消除
 
 ## 幂等性与重复运行

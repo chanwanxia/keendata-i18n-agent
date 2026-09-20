@@ -72,7 +72,7 @@ scaffold → inject → check_cli → doctor → scan → apply → extract → 
 | `mixins/i18n-mixin.js` | `src/mixins/i18n-mixin.js` | RTL 方向切换 + 宽度适配 + displayName mixin |
 | `utils/i18n.js` | `src/utils/i18n.js` | 非组件场景 displayNameLabel helper |
 | `styles/i18n-style.scss` | `src/styles/i18n-style.scss` | RTL 样式覆盖 |
-| `utils/elementui-utils.js` | `src/utils/elementui-utils.js` | Element UI + KD 组件 locale 适配；依赖 `@kd/components >= 5.x`（v5 起才有 `dist/locale/lang/*`）；通过 VueI18n 实例统一接管 Element UI + @kd/components 的 locale；main.js inject 依赖此文件的 `i18n` 导出 |
+| `utils/elementui-utils.js` | `src/utils/elementui-utils.js` | Element UI + KD 组件 locale 适配；依赖 `@kd/components >= 5.2.2`（v5 起才有 `dist/locale/lang/*`）；通过 VueI18n 实例统一接管 Element UI + @kd/components 的 locale；main.js inject 依赖此文件的 `i18n` 导出 |
 | `postcss.config.js` | `postcss.config.js` | postcss-rtlcss 配置（如不存在则创建，已存在则注入 postcss-rtlcss 插件配置） |
 
 ### postcss.config.js 模板
@@ -106,6 +106,7 @@ module.exports = {
 读取目标项目 `package.json`，JSON parse/serialize 方式注入：
 
 **dependencies 补齐**（如缺）：
+- `@kd/components: "^5.2.2"`（最低 `5.2.2`，自动更新到 `5.x` 范围内最新版本）
 - `@voerkai18n/runtime: "^2.1.13"`
 - `@voerkai18n/vue2: "^2.1.13"`
 - `vue-i18n: "8.28.2"`（elementui-utils.js 依赖 VueI18n 实例接管 Element UI + @kd/components 的 locale）
@@ -124,7 +125,7 @@ module.exports = {
 
 版本号严格锁定 `^2.1.13`（voerkai18n 系列）和金标版本（postcss 系列）。
 
-写回 `package.json`，保留原有缩进。不自动执行 `pnpm install`，输出提示让用户手动安装。
+写回 `package.json`，保留原有缩进。依赖写入后自动执行 `pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod`，确保每次 inject 都安装最新的 `5.x` 版本。
 
 ### 3.2 全局 CLI 版本检查
 
@@ -233,11 +234,12 @@ module.exports = {
 
 ### 3.8 @kd/components 版本检查
 
-在 `injectPackageJson` 后检查 `@kd/components` 版本：
+在 `injectPackageJson` 后检查并刷新 `@kd/components`：
 - 读取 `package.json` 的 `dependencies["@kd/components"]`
-- 若版本 `< 5.0.0`（如 `^4.x`），输出 fail：`@kd/components 版本过低，国际化 locale 文件需要 v5+，请升级: pnpm add @kd/components@^5`
-- 若不存在 `@kd/components` 依赖，输出 fail：`未检测到 @kd/components，elementui-utils.js 中的 KD 组件 locale 将不可用`
-- doctor 会作为检查项报告，agent 输出提示让用户手动升级
+- 统一写入 `^5.2.2`，若旧依赖在 `devDependencies` 则迁移到 `dependencies`
+- 执行 `pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod`
+- 若版本 `< 5.2.2`（如 `^4.x` 或 `^5.2.1`），doctor 输出 fail：`@kd/components 版本过低，国际化 locale 文件需要 v5.2.2+`
+- 若安装命令失败，inject 立即返回失败，不继续修改其他源码文件
 
 ### 3.9 inject 幂等性与 force 模式
 
@@ -584,7 +586,7 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 - 新增 `checkGlobalCli`：验证全局 `voerkai18n` 版本为 `2.1.x`
 - 新增 `checkPostcssConfig`：验证 postcss.config.js 包含 postcss-rtlcss 配置
 - `checkDependencies` 扩展：增加 `@kd/components` 存在性检查（fail 级别）
-- 新增 `checkKdComponentsVersion`：验证 `@kd/components` 版本 >= 5.0.0（v5 起才有 `dist/locale/lang/*`），低于 v5 则 fail
+- 新增 `checkKdComponentsVersion`：验证 `@kd/components` 版本 >= 5.2.2（v5 起才有 `dist/locale/lang/*`），低于 5.2.2 则 fail
 - 新增 `checkLayoutHeaderLanguageSwitcher`：验证 layout-header 组件包含 `i18nMixin` 和语言切换器（`activeLanguage` 或 `changeLanguage`），缺失则 fail
 - 新增 `checkElementuiUtils`：验证 `src/utils/elementui-utils.js` 存在且包含 `@kd/components/dist/locale` import，缺失则 fail
 - doctor fail 项处理扩展：`kd-components-version`、`layout-header-language`、`elementui-utils` 加入可修复列表
@@ -601,7 +603,7 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 - **产物完整性检查**：验证 `generatedFiles` 是否存在且非空
 - 输出结构化报告，`--json` 可用于 CI 集成
 - **layout-header 语言切换器检查**：验证头部组件包含语言切换 UI
-- **@kd/components 版本检查**：验证 v5+
+- **@kd/components 版本检查**：验证 v5.2.2+
 - **isRtl inject 完整性检查**：扫描使用了 `isRtl` 但缺少 `inject: ["isRtl"]` 的组件
 - **`.meta.title` 包裹检查**：扫描 template 中未被 `t()` 包裹的 `.meta.title` 表达式
 - **isRtl 内联样式检查**：扫描 `:style` 中含方向性属性但未转换为 `isRtl` 条件表达式的组件
@@ -631,7 +633,7 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 - layout-header：验证 i18nMixin import、mixins 注入、kd-select 语言切换器注入
 - layout-header 幂等：已包含 i18nMixin 跳过
 - layout-header 搜索：默认路径不存在时搜索 `src/layout/` 下含 `right-box` 的文件
-- @kd/components 版本检查：`^4.x` 触发 warn，`^5.x` 通过，不存在触发 warn
+- @kd/components 版本检查：`^4.x`、`^5.2.1` 触发 fail，`^5.2.2` 和更高 `5.x` 通过，不存在触发 fail
 - main.js `new Vue({ i18n })` 保留：替换旧 vue-i18n 后 Vue 实例选项保留 i18n
 
 **`apply.test.js`**：
@@ -667,7 +669,7 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 - 路由文件中的中文被检测（不再被 ignoreFilePrefix 跳过）
 
 **`doctor.test.js`**（新增）：
-- checkKdComponentsVersion：v4 → fail，v5 → pass，不存在 → fail
+- checkKdComponentsVersion：v4、v5.2.1 → fail，v5.2.2 → pass，不存在 → fail
 - checkLayoutHeaderLanguageSwitcher：缺失 i18nMixin → fail，包含 → pass
 - checkElementuiUtils：缺失文件 → fail，缺少 KD locale import → fail
 - checkDependencies 扩展：缺少 @kd/components → fail
@@ -702,13 +704,13 @@ kd-i18n run --json
 
 - 目标项目与 gaea-fe-new 同框架：Vue2 + element-ui + @kd/components + vue-cli
 - `@voerkai18n/cli` 全局安装版本必须为 `2.1.13`（v3 不兼容）
-- package.json 依赖注入后需用户手动执行 `pnpm install`（agent 不自动执行）
+- inject 会自动执行 `pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod`，刷新到最新 `5.x`
 - 全局 CLI 需用户手动安装：`pnpm add -g @voerkai18n/cli@2.1.13`
 - LLM 翻译默认 `gpt-5.5`，可通过 `LLM_MODEL` 覆盖
 - `LLM_API_KEY` 未设置时 translate 回退 glossary 并警告
 - 代码修改后执行 `pnpm lint fix`
 - 新增方法必须补充功能注释
-- `@kd/components` 版本必须 `>= 5.0.0`，否则 elementui-utils.js 中的 KD 组件 locale 文件不可用（inject 输出 fail，agent 提示用户手动升级）
+- `@kd/components` 版本必须 `>= 5.2.2`，否则 elementui-utils.js 中的 KD 组件 locale 文件不可用；inject 会自动安装 `^5.2.2` 范围内最新的 `5.x`
 - layout-header 文件路径默认 `src/layout/layout-header/index.vue`，如不存在则搜索 `src/layout/` 下含 `right-box` 的 `.vue` 文件
 - isRtl 内联样式转换仅处理对象语法 `:style="{ ... }"`，不处理字符串语法 `:style="'padding-right: 32px'"`（字符串语法在金标项目中未使用）
 - `.meta.title` 自动包裹仅匹配 template mustache 和 v-bind 表达式，不匹配 script 中的属性访问

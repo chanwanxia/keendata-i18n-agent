@@ -31,7 +31,7 @@ function decideNextAction(state) {
      "rtl-mixin",
      "elementui-utils",
    ];
-   // inject 可修复的检查项：代码注入类（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）
+   // inject 可修复的检查项：代码注入和依赖版本类
    const injectFixable = [
      "bootstrap-main",
      "webpack-loader",
@@ -40,6 +40,7 @@ function decideNextAction(state) {
      "route-title",
      "layout-header-language",
      "dependencies",
+     "kd-components-version",
      "scripts",
      "postcss-config",
    ];

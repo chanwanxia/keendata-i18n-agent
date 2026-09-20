@@ -3,7 +3,13 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { injectPackageJson } = require("../src/kit/inject");
+const {
+  injectPackageJson,
+  inject,
+  installKdComponents,
+  KD_COMPONENTS_INSTALL_SPEC,
+  KD_COMPONENTS_VERSION_RANGE,
+} = require("../src/kit/inject");
 
 /**
  * 创建临时项目
@@ -37,10 +43,79 @@ test("package.json 注入依赖和脚本", () => {
 
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
   assert.strictEqual(pkg.dependencies["@voerkai18n/runtime"], "^2.1.13");
+  assert.strictEqual(pkg.dependencies["@kd/components"], KD_COMPONENTS_VERSION_RANGE);
   assert.strictEqual(pkg.devDependencies["@voerkai18n/cli"], "^2.1.13");
   assert.strictEqual(pkg.devDependencies["postcss-rtlcss"], "^6.0.0");
   assert.ok(pkg.scripts["i18n:extract"]);
   assert.ok(pkg.scripts["i18n:compile"]);
+});
+
+test("@kd/components 旧版本会统一升级到 5.2.2 范围并迁移到 dependencies", () => {
+  const projectRoot = createTempProject({
+    "package.json": JSON.stringify({
+      name: "test",
+      dependencies: {},
+      devDependencies: { "@kd/components": "^5.2.1" },
+      scripts: {},
+    }),
+  });
+
+  const result = injectPackageJson(projectRoot);
+  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+
+  assert.strictEqual(result.updated, true);
+  assert.strictEqual(pkg.dependencies["@kd/components"], KD_COMPONENTS_VERSION_RANGE);
+  assert.strictEqual(pkg.devDependencies["@kd/components"], undefined);
+});
+
+test("installKdComponents 每次刷新 5.x 范围内最新版本", () => {
+  const projectRoot = createTempProject({
+    "package.json": JSON.stringify({ name: "test" }),
+  });
+  const binDir = path.join(projectRoot, "fake-bin");
+  const logPath = path.join(projectRoot, "pnpm-args.log");
+  fs.mkdirSync(binDir);
+  const pnpmPath = path.join(binDir, "pnpm");
+  fs.writeFileSync(
+    pnpmPath,
+    `#!/bin/sh
+printf '%s\n' "$*" >> "${logPath}"
+`,
+  );
+  fs.chmodSync(pnpmPath, 0o755);
+
+  const result = installKdComponents(projectRoot, {
+    env: { PATH: `${binDir}:${process.env.PATH}` },
+  });
+  const commands = fs.readFileSync(logPath, "utf8");
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.command, `pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod && pnpm update @kd/components --prod`);
+  assert.match(commands, /add @kd\/components@\^5\.2\.2 --save-prod/);
+  assert.match(commands, /update @kd\/components --prod/);
+});
+
+test("依赖安装失败时 inject 不继续修改源码", () => {
+  const projectRoot = createTempProject({
+    "package.json": JSON.stringify({ name: "test" }),
+    "src/main.js": "const original = true;\n",
+  });
+  const binDir = path.join(projectRoot, "fake-bin");
+  const pnpmPath = path.join(binDir, "pnpm");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(pnpmPath, "#!/bin/sh\nexit 1\n");
+  fs.chmodSync(pnpmPath, 0o755);
+
+  const result = inject(projectRoot, {}, {}, {
+    env: { PATH: `${binDir}:${process.env.PATH}` },
+  });
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.details.mainJs.updated, false);
+  assert.strictEqual(
+    fs.readFileSync(path.join(projectRoot, "src/main.js"), "utf8"),
+    "const original = true;\n",
+  );
 });
 
 test("package.json 已有依赖不重复注入", () => {

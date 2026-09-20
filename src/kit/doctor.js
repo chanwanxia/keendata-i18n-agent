@@ -1,6 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const { getPresetById, getDefaultPreset } = require("./presets");
+const {
+  KD_COMPONENTS_MIN_VERSION,
+  KD_COMPONENTS_INSTALL_SPEC,
+} = require("./inject");
 
 /**
  * 检查项目 i18n 基建完整性，未命中 preset 时回退到默认 preset 规则
@@ -262,7 +266,7 @@ function checkDependencies(projectRoot) {
  // @kd/components 版本检查
  if (!allDeps["@kd/components"]) {
    return createCheck("dependencies", "fail", "缺少 @kd/components 依赖", {
-     suggestion: "安装 @kd/components v5.2.1+: pnpm add @kd/components@^5.2.1",
+     suggestion: `安装 @kd/components v${KD_COMPONENTS_MIN_VERSION}+: pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod`,
    });
  }
  return createCheck("dependencies", "pass", "i18n 依赖完整");
@@ -443,7 +447,7 @@ function createCheck(id, status, message, extra = {}) {
 }
 
 /**
- * 检查 @kd/components 版本是否 >= 5.2.1（v5 起才有 dist/locale/lang/* 国际化文件）
+ * 检查 @kd/components 版本是否 >= 5.2.2（v5 起才有 dist/locale/lang/* 国际化文件）
  * @param {string} projectRoot - 项目根路径
  * @returns {object} 检查结果
  */
@@ -458,7 +462,7 @@ function checkKdComponentsVersion(projectRoot) {
     (pkg.devDependencies && pkg.devDependencies["@kd/components"]);
   if (!version) {
     return createCheck("kd-components-version", "fail", "未检测到 @kd/components", {
-      suggestion: "安装 @kd/components v5.2.1+: pnpm add @kd/components@^5.2.1",
+      suggestion: `安装 @kd/components v${KD_COMPONENTS_MIN_VERSION}+: pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod`,
     });
   }
   const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
@@ -468,9 +472,9 @@ function checkKdComponentsVersion(projectRoot) {
   const major = parseInt(match[1], 10);
   const minor = parseInt(match[2], 10);
   const patch = parseInt(match[3], 10);
-  if (major < 5 || (major === 5 && (minor < 2 || (minor === 2 && patch < 1)))) {
-    return createCheck("kd-components-version", "fail", `@kd/components 版本 ${version} 过低，国际化 locale 需要 v5.2.1+`, {
-      suggestion: "升级: pnpm add @kd/components@^5.2.1",
+  if (major < 5 || (major === 5 && (minor < 2 || (minor === 2 && patch < 2)))) {
+    return createCheck("kd-components-version", "fail", `@kd/components 版本 ${version} 过低，国际化 locale 需要 v${KD_COMPONENTS_MIN_VERSION}+`, {
+      suggestion: `升级: pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod`,
     });
   }
   return createCheck("kd-components-version", "pass", `@kd/components ${version}`);
@@ -568,5 +572,7 @@ function checkElementuiUtils(projectRoot, bootstrapRules) {
 }
 
 module.exports = {
+  checkDependencies,
+  checkKdComponentsVersion,
   inspectProjectSetup,
 };

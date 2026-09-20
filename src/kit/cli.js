@@ -361,6 +361,9 @@ function injectCommand(projectRoot, profile, config, flags) {
       `  package.json: ${report.details.packageJson.updated ? "已更新" : "无需更新"}`,
     );
     console.log(
+      `  @kd/components: ${report.details.kdComponentsInstall && report.details.kdComponentsInstall.ok ? "已安装最新 5.x" : "安装失败"}`,
+    );
+    console.log(
       `  main.js: ${report.details.mainJs.updated ? "已注入" : "无需注入"}`,
     );
     console.log(
@@ -377,7 +380,7 @@ function injectCommand(projectRoot, profile, config, flags) {
   if (!cliCheck.ok) {
     console.log(`[i18n-kit] 警告: ${cliCheck.message}`);
   }
-  return 0;
+  return report.ok ? 0 : 1;
 }
 
 /**

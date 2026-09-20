@@ -138,9 +138,11 @@ function createTools(projectRoot, config) {
      },
       execute(args) {
         const profile = kit.detectProjectProfile(projectRoot);
-       const report = kit.inject(projectRoot, profile, config, { force: Boolean(args.force) });
+        const report = kit.inject(projectRoot, profile, config, { force: Boolean(args.force) });
+        const installResult = report.details.kdComponentsInstall || {};
         return {
-          ok: true,
+          ok: report.ok,
+          message: report.ok ? undefined : installResult.message || "依赖注入失败",
           details: report.details,
         };
       },

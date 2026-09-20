@@ -4,6 +4,7 @@ const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 const generate = require("@babel/generator").default;
 const t = require("@babel/types");
+const { runShellCommand } = require("./shell");
 
 const JS_PARSE_PLUGINS = [
   "jsx",
@@ -17,11 +18,16 @@ const JS_PARSE_PLUGINS = [
   "typescript",
 ];
 
+const KD_COMPONENTS_MIN_VERSION = "5.2.2";
+const KD_COMPONENTS_VERSION_RANGE = `^${KD_COMPONENTS_MIN_VERSION}`;
+const KD_COMPONENTS_INSTALL_SPEC = `@kd/components@${KD_COMPONENTS_VERSION_RANGE}`;
+
 /**
  * 依赖注入清单：dependencies / devDependencies / scripts
  */
 const REQUIRED_DEPS = {
   dependencies: {
+    "@kd/components": KD_COMPONENTS_VERSION_RANGE,
     "@voerkai18n/runtime": "^2.1.13",
     "@voerkai18n/vue2": "^2.1.13",
     "vue-i18n": "8.28.2",
@@ -50,15 +56,46 @@ const REQUIRED_DEPS = {
  * @returns {object} 注入报告
  */
 function inject(projectRoot, profile, config, options = {}) {
+  const packageJson = injectPackageJson(projectRoot, options);
+  const kdComponentsInstall = installKdComponents(projectRoot, options);
+
+  if (!kdComponentsInstall.ok) {
+    const kdComponentsVersion = checkKdComponentsVersion(projectRoot);
+    return {
+      ok: false,
+      summary: {
+        packageJsonUpdated: packageJson.updated,
+        kdComponentsInstalled: false,
+        mainJsUpdated: false,
+        vueConfigUpdated: false,
+        appVueUpdated: false,
+        interceptorsUpdated: false,
+        layoutHeaderUpdated: false,
+        kdComponentsWarning: kdComponentsVersion || null,
+      },
+      details: {
+        packageJson,
+        kdComponentsInstall,
+        kdComponentsVersion,
+        mainJs: { updated: false, message: "依赖安装失败，已跳过" },
+        vueConfig: { updated: false, message: "依赖安装失败，已跳过" },
+        appVue: { updated: false, message: "依赖安装失败，已跳过" },
+        interceptors: { updated: false, message: "依赖安装失败，已跳过" },
+        layoutHeader: { updated: false, message: "依赖安装失败，已跳过" },
+      },
+    };
+  }
+
   const results = {
-    packageJson: injectPackageJson(projectRoot, options),
+    packageJson,
+    kdComponentsInstall,
     mainJs: injectMainJs(projectRoot, options),
     vueConfig: injectVueConfig(projectRoot, options),
-   appVue: injectAppVue(projectRoot, options),
-   interceptors: injectAcceptLanguage(projectRoot, options),
+    appVue: injectAppVue(projectRoot, options),
+    interceptors: injectAcceptLanguage(projectRoot, options),
     layoutHeader: injectLayoutHeader(projectRoot, options),
     kdComponentsVersion: checkKdComponentsVersion(projectRoot),
- };
+  };
 
   // 对被修改的文件统一执行 eslint --fix，修复注入引入的格式问题
   const { runEslintFix } = require("./eslint");
@@ -80,14 +117,15 @@ function inject(projectRoot, profile, config, options = {}) {
     ok: true,
     summary: {
       packageJsonUpdated: results.packageJson.updated,
+      kdComponentsInstalled: results.kdComponentsInstall.ok,
       mainJsUpdated: results.mainJs.updated,
       vueConfigUpdated: results.vueConfig.updated,
       appVueUpdated: results.appVue.updated,
-     interceptorsUpdated: results.interceptors.updated,
-     layoutHeaderUpdated: results.layoutHeader.updated,
-     kdComponentsWarning: results.kdComponentsVersion || null,
-   },
-   details: results,
+      interceptorsUpdated: results.interceptors.updated,
+      layoutHeaderUpdated: results.layoutHeader.updated,
+      kdComponentsWarning: results.kdComponentsVersion || null,
+    },
+    details: results,
   };
 }
 
@@ -157,6 +195,15 @@ function injectPackageJson(projectRoot, options = {}) {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
   const added = [];
 
+  if (pkg.devDependencies && pkg.devDependencies["@kd/components"]) {
+    if (!pkg.dependencies) pkg.dependencies = {};
+    if (pkg.dependencies["@kd/components"] !== KD_COMPONENTS_VERSION_RANGE) {
+      pkg.dependencies["@kd/components"] = KD_COMPONENTS_VERSION_RANGE;
+    }
+    delete pkg.devDependencies["@kd/components"];
+    added.push("dependencies.@kd/components");
+  }
+
   /**
    * 检查依赖是否已存在于另一个 section 中，避免重复添加
    * @param {string} name - 依赖名
@@ -178,7 +225,8 @@ function injectPackageJson(projectRoot, options = {}) {
       }
       if (
         !pkg[section][name] ||
-        (options.force && pkg[section][name] !== value)
+        (options.force && pkg[section][name] !== value) ||
+        (name === "@kd/components" && pkg[section][name] !== value)
       ) {
         pkg[section][name] = value;
         added.push(`${section}.${name}`);
@@ -192,6 +240,44 @@ function injectPackageJson(projectRoot, options = {}) {
 
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
   return { updated: true, added };
+}
+
+/**
+ * 每次注入时安装满足最低版本要求的最新 @kd/components 5.x 版本
+ * @param {string} projectRoot - 目标项目根路径
+ * @param {object} options - shell 执行选项
+ * @returns {object} 安装结果
+ */
+function installKdComponents(projectRoot, options = {}) {
+  const pkgPath = path.join(projectRoot, "package.json");
+  if (!fs.existsSync(pkgPath)) {
+    return {
+      ok: false,
+      command: null,
+      message: "package.json 不存在，无法安装 @kd/components",
+    };
+  }
+
+  const command = `pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod && pnpm update @kd/components --prod`;
+  const status = runShellCommand(
+    command,
+    projectRoot,
+    "更新 @kd/components 到最新 5.x 版本",
+    options,
+  );
+  if (status !== 0) {
+    return {
+      ok: false,
+      command,
+      message: `更新 @kd/components 失败，请检查 pnpm、网络和仓库权限: ${command}`,
+    };
+  }
+
+  return {
+    ok: true,
+    command,
+    message: `已安装 @kd/components ${KD_COMPONENTS_VERSION_RANGE} 范围内的最新 5.x 版本`,
+  };
 }
 
 /**
@@ -1095,8 +1181,7 @@ function findHeaderComponent(dir) {
 }
 
 /**
- * 检查 @kd/components 版本是否 >= 5.2.1（v5 起才有 dist/locale/lang/* 国际化文件）
- * 仅输出 warn，不阻塞流程
+ * 检查 @kd/components 版本是否 >= 5.2.2（v5 起才有 dist/locale/lang/* 国际化文件）
  * @param {string} projectRoot - 目标项目根路径
  * @returns {object|null} 版本检查结果，null 表示未找到 @kd/components
  */
@@ -1113,7 +1198,7 @@ function checkKdComponentsVersion(projectRoot) {
     return { ok: false, message: "未检测到 @kd/components，elementui-utils.js 中的 KD 组件 locale 将不可用" };
   }
 
-  // 提取版本号中的主版本号（支持 ^5.2.1, ~5.0.0, 5.x 等格式）
+  // 提取版本号中的主版本号（支持 ^5.2.2, ~5.2.2 等格式）
   const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!match) {
     return { ok: false, message: `@kd/components 版本格式无法解析: ${version}` };
@@ -1122,10 +1207,10 @@ function checkKdComponentsVersion(projectRoot) {
   const major = parseInt(match[1], 10);
   const minor = parseInt(match[2], 10);
   const patch = parseInt(match[3], 10);
-  if (major < 5 || (major === 5 && (minor < 2 || (minor === 2 && patch < 1)))) {
+  if (major < 5 || (major === 5 && (minor < 2 || (minor === 2 && patch < 2)))) {
     return {
       ok: false,
-      message: `@kd/components 版本 ${version} 过低，国际化 locale 文件需要 v5.2.1+，请升级: pnpm add @kd/components@^5`,
+      message: `@kd/components 版本 ${version} 过低，国际化 locale 文件需要 v${KD_COMPONENTS_MIN_VERSION}+，请升级: pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod`,
     };
   }
 
@@ -1192,6 +1277,10 @@ module.exports = {
   injectAppVue,
   injectAcceptLanguage,
   injectLayoutHeader,
+  installKdComponents,
   checkKdComponentsVersion,
+  KD_COMPONENTS_MIN_VERSION,
+  KD_COMPONENTS_VERSION_RANGE,
+  KD_COMPONENTS_INSTALL_SPEC,
   REQUIRED_DEPS,
 };
