@@ -120,7 +120,7 @@ function applyI18n(projectRoot, config, options = {}) {
 function transformFile(source, filePath, relativePath, preset, config) {
   const extension = path.extname(filePath);
   if (extension === ".vue") {
-    return transformVueFile(source, preset, config);
+    return transformVueFile(source, preset, config, relativePath);
   }
   if (extension === ".js") {
     const result = transformJsFile(source, {
@@ -148,9 +148,10 @@ function transformFile(source, filePath, relativePath, preset, config) {
  * @param {string} source - 源码
  * @param {object} preset - 预设规则
  * @param {object} config - i18n 配置
+ * @param {string} relativePath - 相对项目根目录的文件路径
  * @returns {object} 变换结果
  */
-function transformVueFile(source, preset, config) {
+function transformVueFile(source, preset, config, relativePath) {
   let changed = false;
   let replacements = 0;
   let code = source;
@@ -246,6 +247,14 @@ function transformVueFile(source, preset, config) {
     changed = true;
   }
 
+  // SVG 图标的 margin 需要根据 RTL 方向交换左右边距
+  const svgIconMarginResult = transformSvgIconMargin(code, relativePath);
+  if (svgIconMarginResult.changed) {
+    changed = true;
+    replacements += svgIconMarginResult.replacements;
+    code = svgIconMarginResult.code;
+  }
+
   return { changed, replacements, code };
 }
 
@@ -311,6 +320,106 @@ function transformVueFileFallback(source, preset, config) {
   }
 
   return { changed, replacements, code };
+}
+
+/**
+ * 更新标准 SVG 图标组件的 RTL margin 计算属性
+ * @param {string} source - Vue SFC 源码
+ * @param {string} relativePath - 相对项目根目录的文件路径
+ * @returns {object} 变换结果 { changed, replacements, code }
+ */
+function transformSvgIconMargin(source, relativePath) {
+  if (relativePath !== "src/components/svg-icon/index.vue") {
+    return { changed: false, replacements: 0, code: source };
+  }
+
+  let sfc;
+  try {
+    sfc = parseComponent(source);
+  } catch {
+    return { changed: false, replacements: 0, code: source };
+  }
+
+  if (!sfc.script || !sfc.script.content) {
+    return { changed: false, replacements: 0, code: source };
+  }
+
+  const scriptSource = source.slice(sfc.script.start, sfc.script.end);
+  let ast;
+  try {
+    ast = parser.parse(scriptSource, {
+      sourceType: "unambiguous",
+      plugins: JS_PARSE_PLUGINS,
+    });
+  } catch {
+    return { changed: false, replacements: 0, code: source };
+  }
+
+  let marginMethod;
+  traverse(ast, {
+    ExportDefaultDeclaration(pathRef) {
+      const component = pathRef.node.declaration;
+      if (!t.isObjectExpression(component)) return;
+
+      const computed = component.properties.find(
+        (property) =>
+          property.key &&
+          !property.computed &&
+          property.key.name === "computed" &&
+          t.isObjectExpression(property.value),
+      );
+      const margin = computed?.value.properties.find(
+        (property) =>
+          property.key &&
+          !property.computed &&
+          property.key.name === "margin" &&
+          t.isObjectMethod(property),
+      );
+      if (margin) {
+        marginMethod = margin;
+        pathRef.stop();
+      }
+    },
+  });
+
+  if (!marginMethod || /\bisRtl\b/.test(
+    scriptSource.slice(marginMethod.body.start, marginMethod.body.end),
+  )) {
+    return { changed: false, replacements: 0, code: source };
+  }
+
+  const methodIndent = scriptSource
+    .slice(0, marginMethod.start)
+    .split(/\r?\n/)
+    .pop()
+    .match(/^[ \t]*/)[0];
+  const bodyLines = scriptSource
+    .slice(marginMethod.body.start, marginMethod.body.end)
+    .match(/\r?\n([ \t]+)\S/);
+  const statementIndent = bodyLines
+    ? bodyLines[1]
+    : `${methodIndent}  `;
+  const indentUnit = statementIndent.slice(methodIndent.length) || "  ";
+  const nestedIndent = statementIndent + indentUnit;
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const replacement = [
+    "{",
+    `${statementIndent}if (this.isRtl) {`,
+    `${nestedIndent}return \`\${ this.mt }px \${ this.ml }px \${ this.mb }px \${ this.mr }px\`;`,
+    `${statementIndent}} else {`,
+    `${nestedIndent}return \`\${ this.mt }px \${ this.mr }px \${ this.mb }px \${ this.ml }px\`;`,
+    `${statementIndent}}`,
+    `${methodIndent}}`,
+  ].join(newline);
+
+  return {
+    changed: true,
+    replacements: 1,
+    code:
+      source.slice(0, sfc.script.start + marginMethod.body.start) +
+      replacement +
+      source.slice(sfc.script.start + marginMethod.body.end),
+  };
 }
 
 /**

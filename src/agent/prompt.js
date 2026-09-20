@@ -32,13 +32,13 @@ function buildSystemPrompt(projectRoot, config) {
 
 ## 工作流程
 
-推荐流程（但你可以根据实际情况自主调整顺序和重试）：
-1. scaffold — 写入 i18n 基础设施文件（default.json 含翻译数据，force=true 也不覆盖）
+必须严格按以下流程执行；只有检查结果不通过时，才允许回到对应修复步骤：
+1. scaffold — 写入 i18n 基础设施文件（default.json 含翻译数据，force=true 也不覆盖；同时清理历史遗留问题）
 2. inject — 注入 i18n 代码到 main.js / vue.config.js / App.vue（注入后自动 eslint --fix）
 3. doctor — 检查基建完整性
 4. scan — 扫描未国际化中文
 5. apply — 自动改写可安全处理的中文文案（先用 dryRun 预览，再正式执行；写入后自动 eslint --fix）
-   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换、国际化时区代码变换（el-date-picker→kd-date-picker、Date.now()→this.tzDateNow()、new Date()→this.tzNewDate()、parseTime()→parseTime(this.tzNewDate())、dayjs()→this.$i18nNow()）等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。**apply 正式执行时会自动清理历史遗留问题**（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用），无需单独调用 cleanup_i18n。
+   **apply 必须执行**，即使 scan 结果为 0：apply 还负责 label-width="auto" 转换、isRtl 内联样式转换、svg-icon margin RTL 适配、国际化时区代码变换（el-date-picker→kd-date-picker、Date.now()→this.tzDateNow()、new Date()→this.tzNewDate()、parseTime()→parseTime(this.tzNewDate())、dayjs()→this.$i18nNow()）等不依赖中文扫描的变换。apply 是幂等的，重复执行不会产生问题。apply 正式执行时也会清理历史遗留问题（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用）。
 6. extract — 提取词条到翻译源文件
 7. translate — 补齐缺失翻译（推荐使用 llm provider 获得最佳翻译质量）
 8. validate — 校验翻译
@@ -56,8 +56,9 @@ doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提
 ## 幂等性与重复运行
 
 - apply 和 inject 都是幂等的：重复执行不会产生重复包裹或重复注入
-- 如果重复 run 发现已有嵌套 t(t(...)) 或重复 import，cleanup_i18n 会自动修复
+- scaffold/apply 会自动清理重复 run 可能遗留的嵌套 t(t(...)) 或重复 import
 - apply 和 inject 写入后会自动执行 eslint --fix 修复格式问题（多余空格等）
+- src/components/svg-icon/index.vue 中已有的 Vue2 computed.margin 会自动改为 RTL/LTR 两套左右边距顺序，按原有缩进生成，重复执行不会重复修改
 
 ## 翻译质量保障（关键）
 
@@ -71,11 +72,12 @@ translate 之后必须执行 validate，并检查结果：
 
 ## 错误恢复
 
-- 工具返回 error 时，仔细阅读错误信息，理解问题原因，采取纠正措施
-- 可以用 read_file 读取相关文件，理解上下文后用 write_file 修复
-- 可以重试失败的工具
+- 工具返回 error、受控命令执行非零退出码、写入失败、翻译 provider 失败或其他执行工具返回 ok=false 时，必须立即停止；不要继续调用工具、修改文件或宣称流程成功
+- doctor、validate_translations、check_generated_files 返回 ok=false 时属于检查结果，不是执行异常；可以读取报告定位问题，但只有检查通过后才能进入后续依赖步骤或宣称成功
+- 工具参数 JSON 无法解析、未知工具或工具返回无效结果时，必须立即停止
+- 发生执行失败后，等待用户修复外部原因，再重新运行；不要依靠重复写文件来掩盖错误
 - 如果 translate 返回 0 条翻译但 validate 仍有问题，先检查 default.json 中具体哪些条目有问题，用 read_file 查看后重新 translate（增量模式）
-- 不要遇到错误就直接停止，要尽力修复
+- 对于检查结果中的可修复问题，可以在不发生执行异常的前提下按流程处理；不要用重试或继续写文件掩盖执行错误
 
 ## 文件编辑
 

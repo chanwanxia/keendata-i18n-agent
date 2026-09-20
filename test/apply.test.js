@@ -769,6 +769,59 @@ test("静态 style 的 left 属性转换为 right", () => {
   assert.ok(result.includes("'left'"), "LTR 分支应保留 left");
 });
 
+test("svg-icon 的 computed.margin 更新 RTL 顺序并保留四空格缩进", () => {
+  const projectRoot = createTempProject({
+    "src/components/svg-icon/index.vue": `<template><svg :style="iconStyle"/></template>
+<script>
+export default {
+    computed: {
+        margin() {
+            return \`\${this.mt}px \${this.mr}px \${this.mb}px \${this.ml}px\`;
+        },
+        iconStyle() {
+            return { margin: this.margin };
+        },
+    },
+};
+</script>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/components/svg-icon/index.vue"),
+    "utf8",
+  );
+  assert.match(
+    result,
+    /margin\(\) \{\n {12}if \(this\.isRtl\) \{/,
+    "应按现有四空格规则注入 if",
+  );
+  assert.ok(
+    result.includes(
+      "return `${ this.mt }px ${ this.ml }px ${ this.mb }px ${ this.mr }px`;",
+    ),
+    "RTL 分支应交换 mr/ml",
+  );
+  assert.ok(
+    result.includes(
+      "return `${ this.mt }px ${ this.mr }px ${ this.mb }px ${ this.ml }px`;",
+    ),
+    "LTR 分支应保持 mr/ml",
+  );
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const repeated = fs.readFileSync(
+    path.join(projectRoot, "src/components/svg-icon/index.vue"),
+    "utf8",
+  );
+  assert.strictEqual(
+    (repeated.match(/if \(this\.isRtl\)/g) || []).length,
+    1,
+    "重复执行不应重复注入",
+  );
+});
+
 // ===== 国际化时区变换测试 =====
 
 test("el-date-picker type=datetime 替换为 kd-date-picker（配对标签）", () => {

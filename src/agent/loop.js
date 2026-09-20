@@ -16,6 +16,12 @@ const CONTEXT_TRIM_KEEP_CHARS = 120;
 const LOOP_DETECT_THRESHOLD = 5;
 /** 无限模式的安全上限，防止真正的死循环 */
 const SAFETY_CAP = 2000;
+/** 这些工具返回 ok=false 时仍属于可供 agent 处理的业务结果 */
+const NON_FATAL_STATUS_TOOLS = new Set([
+  "doctor",
+  "validate_translations",
+  "check_generated_files",
+]);
 
 /**
  * 将工具结果格式化为人类可读的简短摘要
@@ -79,14 +85,6 @@ function formatToolResult(toolName, result) {
         : "无需改写，未发现可自动处理项";
     }
 
-    case "cleanup_i18n": {
-      const fileCount = getCleanupFileCount(result.summary, result.cleanedFiles);
-      const fixCount = result.summary ? result.summary.totalFixes || 0 : 0;
-      return fileCount > 0
-        ? `清理 ${fileCount} 个文件, 修复 ${fixCount} 处历史问题`
-        : "无需清理，未发现历史遗留问题";
-    }
-
     case "extract_entries":
       return result.ok ? "词条提取成功" : `词条提取失败: ${(result.stderr || "").slice(0, 80)}`;
 
@@ -125,14 +123,65 @@ function formatToolResult(toolName, result) {
         ? "运行时产物完整"
         : `缺失 ${(result.missingFiles || result.missing || []).length} 个产物文件`;
 
-    case "run_shell":
-      return result.ok
-        ? `命令执行成功`
-        : `命令执行失败: ${(result.stderr || "").slice(0, 80)}`;
-
     default:
       return JSON.stringify(result).slice(0, 120);
   }
+}
+
+/**
+ * 判断工具结果是否代表必须中断的执行失败。
+ * doctor、validate_translations、check_generated_files 以及
+ * translate_entries 的翻译质量问题，都是可供 agent 处理的业务结果；
+ * provider、文件和命令执行失败仍必须中断。
+ * @param {string} toolName - 工具名称
+ * @param {object} result - 工具返回结果
+ * @returns {string|null} 失败原因；null 表示允许继续
+ */
+function getFatalToolFailure(toolName, result) {
+  if (!result || typeof result !== "object") {
+    return "工具未返回有效结果";
+  }
+  if (result.error) {
+    return result.error;
+  }
+  if (result.ok !== false || NON_FATAL_STATUS_TOOLS.has(toolName)) {
+    return null;
+  }
+  if (toolName === "translate_entries") {
+    const summary = result.summary || {};
+    const provider = result.provider || {};
+    const hasValidationIssues =
+      summary.issueCount > 0 ||
+      (Array.isArray(result.issues) && result.issues.length > 0);
+    if (hasValidationIssues && provider.ok !== false) {
+      return null;
+    }
+    return (
+      provider.message ||
+      result.message ||
+      summary.missingFile ||
+      "翻译工具执行失败"
+    );
+  }
+  return (
+    result.message ||
+    result.stderr ||
+    `工具返回 ok=false${result.summary ? `: ${JSON.stringify(result.summary)}` : ""}`
+  );
+}
+
+/**
+ * 格式化工具执行失败信息，强调后续动作和最终清理均已停止。
+ * @param {string} toolName - 工具名称
+ * @param {string} reason - 失败原因
+ * @returns {string} agent 失败信息
+ */
+function formatToolFailureMessage(toolName, reason) {
+  return (
+    `工具 ${toolName} 执行失败: ${reason}。` +
+    "agent 已中断，未执行后续工具，也不会执行失败后的最终清理。" +
+    "请修复原因后重新运行。"
+  );
 }
 
 /**
@@ -328,6 +377,7 @@ async function runAgentLoop(
   let startStep = 0;
   let stepCount = 0;
   const recentCalls = [];
+  let unresolvedChecks = [];
   const startTime = Date.now();
 
   // --no-resume：清除旧 checkpoint，从头开始
@@ -344,6 +394,9 @@ async function runAgentLoop(
       stepCount = startStep;
       if (checkpoint.timeline) {
         timeline.push(...checkpoint.timeline);
+      }
+      if (Array.isArray(checkpoint.unresolvedChecks)) {
+        unresolvedChecks = checkpoint.unresolvedChecks;
       }
       console.log(
         `[i18n-agent] 从第 ${startStep} 步恢复执行（共 ${timeline.length} 条历史记录）`,
@@ -386,6 +439,7 @@ async function runAgentLoop(
           timeline,
           model,
           projectRoot,
+          unresolvedChecks,
         });
       }
       return {
@@ -396,11 +450,62 @@ async function runAgentLoop(
       };
     }
 
-    const message = response.choices[0].message;
+    const message =
+      response &&
+      response.choices &&
+      response.choices[0] &&
+      response.choices[0].message;
+    if (!message || typeof message !== "object") {
+      if (projectRoot) {
+        saveCheckpoint(projectRoot, {
+          messages,
+          stepCount: step,
+          timeline,
+          model,
+          projectRoot,
+          unresolvedChecks,
+        });
+      }
+      return {
+        ok: false,
+        message: "LLM 返回无效响应：缺少 choices[0].message，agent 已中断。",
+        stepCount: step,
+        timeline,
+      };
+    }
     messages.push(message);
+
+    if (message.tool_calls != null && !Array.isArray(message.tool_calls)) {
+      return {
+        ok: false,
+        message: "LLM 返回无效 tool_calls，agent 已中断。",
+        stepCount: step + 1,
+        timeline,
+      };
+    }
 
     // 没有 tool_calls 说明 agent 认为任务完成了
     if (!message.tool_calls || message.tool_calls.length === 0) {
+      if (unresolvedChecks.length > 0) {
+        if (projectRoot) {
+          saveCheckpoint(projectRoot, {
+            messages,
+            stepCount: step + 1,
+            timeline,
+            model,
+            projectRoot,
+            unresolvedChecks,
+          });
+        }
+        return {
+          ok: false,
+          message: `${unresolvedChecks.join(
+            "、",
+          )} 检查未通过，agent 已中断，未宣称流程成功。`,
+          stepCount: step + 1,
+          timeline,
+        };
+      }
       if (projectRoot) clearCheckpoint(projectRoot);
       const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(
@@ -416,37 +521,60 @@ async function runAgentLoop(
 
     // 依次执行每个 tool call
     for (const toolCall of message.tool_calls) {
-      const toolName = toolCall.function.name;
+      const functionCall = (toolCall && toolCall.function) || {};
+      const toolName = functionCall.name;
       const tool = tools.find((t) => t.name === toolName);
 
       let result;
       let args = {};
       if (!tool) {
-        result = { error: `未知工具: ${toolName}` };
+        result = { error: `未知工具: ${toolName || "未命名工具"}` };
       } else {
         try {
-          args = JSON.parse(toolCall.function.arguments || "{}");
-        } catch {
-          args = {};
-        }
-        try {
-          result = await tool.execute(args);
+          args = JSON.parse(functionCall.arguments || "{}");
         } catch (err) {
-          result = { error: err.message };
+          result = { error: `工具参数 JSON 解析失败: ${err.message}` };
+        }
+        if (!result) {
+          try {
+            result = await tool.execute(args);
+          } catch (err) {
+            result = {
+              error: err && err.message ? err.message : String(err),
+            };
+          }
         }
       }
 
-      const resultJson = JSON.stringify(result);
+      let resultJson;
+      try {
+        resultJson = JSON.stringify(result);
+      } catch (err) {
+        result = {
+          error: `工具 ${
+            toolName || "未命名工具"
+          } 返回结果无法序列化: ${err.message}`,
+        };
+        resultJson = JSON.stringify(result);
+      }
+      if (!resultJson) {
+        result = {
+          error: `工具 ${
+            toolName || "未命名工具"
+          } 返回了无法序列化的结果`,
+        };
+        resultJson = JSON.stringify(result);
+      }
       messages.push({
         role: "tool",
-        tool_call_id: toolCall.id,
+        tool_call_id: toolCall && toolCall.id,
         content: resultJson,
       });
 
       timeline.push({
         step: step + 1,
         action: toolName,
-        reason: toolCall.function.arguments || "{}",
+        reason: functionCall.arguments || "{}",
         result: resultJson.slice(0, 500),
       });
 
@@ -459,6 +587,34 @@ async function runAgentLoop(
       console.log(
         `[i18n-agent] [${stepDisplay}] ${toolName} → ${summary} (${toolElapsed}s)`,
       );
+
+      const fatalReason = getFatalToolFailure(toolName, result);
+      if (fatalReason) {
+        return {
+          ok: false,
+          message: formatToolFailureMessage(toolName || "未命名工具", fatalReason),
+          stepCount: step + 1,
+          timeline,
+        };
+      }
+
+      if (
+        result.ok === false &&
+        (NON_FATAL_STATUS_TOOLS.has(toolName) ||
+          toolName === "translate_entries")
+      ) {
+        const requiredCheck =
+          toolName === "translate_entries"
+            ? "validate_translations"
+            : toolName;
+        if (!unresolvedChecks.includes(requiredCheck)) {
+          unresolvedChecks.push(requiredCheck);
+        }
+      } else if (result.ok === true && NON_FATAL_STATUS_TOOLS.has(toolName)) {
+        unresolvedChecks = unresolvedChecks.filter(
+          (checkName) => checkName !== toolName,
+        );
+      }
 
       // 循环检测：记录最近调用，检测死循环
       const argsHash = JSON.stringify(args);
@@ -474,6 +630,7 @@ async function runAgentLoop(
             timeline,
             model,
             projectRoot,
+            unresolvedChecks,
           });
         }
         return {
@@ -495,6 +652,7 @@ async function runAgentLoop(
         timeline,
         model,
         projectRoot,
+        unresolvedChecks,
       });
     }
   }

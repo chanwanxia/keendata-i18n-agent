@@ -108,7 +108,7 @@ test("执行 tool call 后终止", async () => {
   assert.strictEqual(result.timeline[0].action, "echo");
 });
 
-test("工具执行出错时返回 error 而非抛异常", async () => {
+test("工具执行出错时立即中断，不再请求下一轮", async () => {
   const tools = [
     {
       name: "boom",
@@ -140,17 +140,6 @@ test("工具执行出错时返回 error 而非抛异常", async () => {
         },
       ],
     },
-    {
-      choices: [
-        {
-          message: {
-            role: "assistant",
-            content: "已处理错误",
-            tool_calls: null,
-          },
-        },
-      ],
-    },
   ]);
 
   const result = await runAgentLoop(
@@ -161,8 +150,10 @@ test("工具执行出错时返回 error 而非抛异常", async () => {
     { maxSteps: 10 },
   );
 
-  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.stepCount, 1);
   assert.ok(result.timeline[0].result.includes("工具爆炸了"));
+  assert.ok(result.message.includes("agent 已中断"));
 });
 
 test("超过最大步数时返回失败", async () => {
@@ -210,7 +201,7 @@ test("超过最大步数时返回失败", async () => {
   assert.ok(result.message.includes("已达到 --max-steps=3"));
 });
 
-test("未知工具返回 error", async () => {
+test("未知工具返回 error 后立即中断", async () => {
   const tools = [];
 
   const client = createMockClient([
@@ -227,6 +218,236 @@ test("未知工具返回 error", async () => {
                   name: "unknown_tool",
                   arguments: "{}",
                 },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.stepCount, 1);
+  assert.ok(result.timeline[0].result.includes("未知工具"));
+});
+
+test("工具返回 ok=false 时中断同一轮后续调用", async () => {
+  let laterToolCalled = false;
+  const tools = [
+    {
+      name: "failed_command",
+      description: "always fails",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({ ok: false, stderr: "command failed" }),
+    },
+    {
+      name: "later_write",
+      description: "must not execute",
+      parameters: { type: "object", properties: {} },
+      execute: () => {
+        laterToolCalled = true;
+        return { written: true };
+      },
+    },
+  ];
+
+  const client = createMockClient([
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                function: { name: "failed_command", arguments: "{}" },
+              },
+              {
+                id: "call_2",
+                function: { name: "later_write", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(laterToolCalled, false);
+  assert.ok(result.message.includes("command failed"));
+});
+
+test("translate_entries 仅有翻译校验问题时必须继续校验", async () => {
+  const tools = [
+    {
+      name: "translate_entries",
+      description: "translation quality issue",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({
+        ok: false,
+        provider: { ok: true, used: "llm" },
+        summary: { issueCount: 1 },
+        issues: [{ type: "source_leakage" }],
+      }),
+    },
+    {
+      name: "validate_translations",
+      description: "translation validation",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({ ok: true }),
+    },
+  ];
+
+  const client = createMockClient([
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                function: { name: "translate_entries", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_2",
+                function: {
+                  name: "validate_translations",
+                  arguments: "{}",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "继续处理",
+            tool_calls: null,
+          },
+        },
+      ],
+    },
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.timeline.length, 2);
+});
+
+test("translate_entries provider 执行失败时立即中断", async () => {
+  const tools = [
+    {
+      name: "translate_entries",
+      description: "translation provider failure",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({
+        ok: false,
+        provider: {
+          ok: false,
+          used: "llm",
+          message: "API unavailable",
+        },
+        summary: {},
+        issues: [],
+      }),
+    },
+  ];
+
+  const client = createMockClient([
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                function: { name: "translate_entries", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.message.includes("API unavailable"));
+});
+
+test("检查未通过时不能直接宣称完成", async () => {
+  const tools = [
+    {
+      name: "doctor",
+      description: "failed check",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({ ok: false, summary: { failCount: 1 } }),
+    },
+  ];
+
+  const client = createMockClient([
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                function: { name: "doctor", arguments: "{}" },
               },
             ],
           },
@@ -254,8 +475,8 @@ test("未知工具返回 error", async () => {
     { maxSteps: 10 },
   );
 
-  assert.strictEqual(result.ok, true);
-  assert.ok(result.timeline[0].result.includes("未知工具"));
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.message.includes("doctor"));
 });
 
 test("多个 tool_calls 在同一轮执行", async () => {
@@ -337,15 +558,7 @@ test("formatToolResult 使用 inject details 统计更新接入点", () => {
   assert.strictEqual(summary, "注入/更新 3 个接入点");
 });
 
-test("formatToolResult 正确展示 cleanup 和 generated 摘要字段", () => {
-  assert.strictEqual(
-    formatToolResult("cleanup_i18n", {
-      ok: true,
-      summary: { cleanedFileCount: 2, totalFixes: 5 },
-      cleanedFiles: [],
-    }),
-    "清理 2 个文件, 修复 5 处历史问题",
-  );
+test("formatToolResult 正确展示 generated 摘要字段", () => {
   assert.strictEqual(
     formatToolResult("check_generated_files", {
       ok: false,

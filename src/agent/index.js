@@ -121,7 +121,9 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
     resume,
     estimatedTotal,
   });
-  const finalCleanup = cleanupProjectArtifacts(projectRoot, config);
+  const finalCleanup = result.ok
+    ? cleanupProjectArtifacts(projectRoot, config)
+    : null;
 
   return {
     ok: result.ok,

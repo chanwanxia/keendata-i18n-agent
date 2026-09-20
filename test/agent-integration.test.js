@@ -177,7 +177,7 @@ test("read_file → write_file → read_file 验证写入", async () => {
   assert.ok(content.includes('t("你好")'));
 });
 
-test("工具返回 error 后 agent 可以继续", async () => {
+test("工具返回 error 后 agent 中断且不继续写文件", async () => {
   const dir = createTempProject({});
 
   const tools = createTools(dir, CONFIG);
@@ -185,14 +185,6 @@ test("工具返回 error 后 agent 可以继续", async () => {
   const client = createMockClient([
     // 先调用一个不存在的文件
     assistantResponse([toolCall("c1", "read_file", { relativePath: "src/missing.js" })]),
-    // agent 读取到了 error，决定写入文件
-    assistantResponse([
-      toolCall("c2", "write_file", {
-        relativePath: "src/missing.js",
-        content: "// fixed\n",
-      }),
-    ]),
-    finishResponse("已修复"),
   ]);
 
   const result = await runAgentLoop(
@@ -203,7 +195,7 @@ test("工具返回 error 后 agent 可以继续", async () => {
     20,
   );
 
-  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.ok, false);
   assert.ok(result.timeline[0].result.includes("文件不存在"));
-  assert.ok(fs.existsSync(path.join(dir, "src/missing.js")));
+  assert.ok(!fs.existsSync(path.join(dir, "src/missing.js")));
 });

@@ -174,7 +174,7 @@ function createTools(projectRoot, config) {
    {
     name: "apply_i18n",
     description:
-        "对目标项目执行 i18n 自动改写：中文文案包裹为 t()、.meta.title 包裹、el-form label-width 转为 auto、isRtl 内联样式转换。正式执行前自动清理历史遗留问题（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用）。即使 scan 结果为 0 也必须执行（label-width 和 isRtl 转换不依赖中文扫描）。基于 AST 操作，安全可靠。写入后自动执行 eslint --fix。dryRun=true 时仅预览不清理。幂等：重复执行不产生重复包裹或转换。",
+        "对目标项目执行 i18n 自动改写：中文文案包裹为 t()、.meta.title 包裹、el-form label-width 转为 auto、isRtl 内联样式转换、src/components/svg-icon/index.vue 已有 computed.margin 的 RTL 适配。正式执行前自动清理历史遗留问题（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用）。即使 scan 结果为 0 也必须执行（label-width、isRtl 和 SVG 图标 margin 转换不依赖中文扫描）。基于 AST 定点修改，按原有缩进生成并保持幂等。写入后自动执行 eslint --fix。dryRun=true 时仅预览不清理。",
     parameters: {
         type: "object",
         properties: {
@@ -195,20 +195,6 @@ function createTools(projectRoot, config) {
           totalChangedFiles: report.changedFiles.length,
         };
       },
-   },
-   {
-     name: "cleanup_i18n",
-     description:
-       "清理已国际化代码中的常见问题：展开嵌套 t(t(...)) 为单层、移除重复 import、修复格式。用于重复 run 时的自动修复。",
-     parameters: { type: "object", properties: {} },
-     execute() {
-       const report = kit.cleanupI18n(projectRoot, config);
-       return {
-         ok: report.ok,
-         summary: report.summary,
-         cleanedFiles: report.cleanedFiles.slice(0, 20),
-       };
-     },
    },
     {
     name: "extract_entries",
@@ -319,33 +305,6 @@ function createTools(projectRoot, config) {
       execute() {
         const report = kit.inspectGeneratedFiles(projectRoot, config);
         return report;
-      },
-    },
-    {
-      name: "run_shell",
-      description:
-        "在目标项目目录执行任意 shell 命令。捕获 stdout 和 stderr。用于运行项目脚本或检查文件。",
-      parameters: {
-        type: "object",
-        properties: {
-          command: {
-            type: "string",
-            description: "要执行的 shell 命令",
-          },
-        },
-        required: ["command"],
-      },
-      execute(args) {
-        const result = runShellCommandCaptured(
-          args.command,
-          projectRoot,
-          "agent shell",
-        );
-        return {
-          ok: result.status === 0,
-          stdout: result.stdout.slice(0, 2000),
-          stderr: result.stderr.slice(0, 2000),
-        };
       },
     },
   ];

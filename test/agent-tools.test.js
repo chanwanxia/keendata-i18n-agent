@@ -189,12 +189,3 @@ test("toToolDefinitions 提取 OpenAI 格式定义", () => {
   assert.ok(defs.every((d) => d.type === "function"));
   assert.ok(defs.every((d) => d.function.name && d.function.description));
 });
-
-test("run_shell 执行命令并捕获输出", () => {
-  const dir = createTempProject({});
-  const tools = createTools(dir, CONFIG);
-  const shellTool = tools.find((t) => t.name === "run_shell");
-  const result = shellTool.execute({ command: "echo hello_agent" });
-  assert.strictEqual(result.ok, true);
-  assert.ok(result.stdout.includes("hello_agent"));
-});

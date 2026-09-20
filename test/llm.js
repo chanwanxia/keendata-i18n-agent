@@ -2,13 +2,11 @@
 /**
  * LLM 接口连通性测试脚本
  * 验证 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 配置是否正常工作
- * 用法: node scripts/test-llm.js
  */
 const { OpenAI } = require("openai");
 
-const apiKey = "sk-a6778cf4b0b3d68418d7a335a470846feefd922c356a9ab986873daf572c8b79";
-const baseUrl =
-  process.env.LLM_BASE_URL || "http://router.keendata.net:5343/v1";
+const apiKey = "sk-3837fe846518eb7002eca2e43efabf67523b29dbddf86fb1e081dff4bd0009eb";
+const baseUrl = "http://router.keendata.net:5343/v1";
 const model = "gpt-5.5";
 
 console.log("=== LLM 接口连通性测试 ===");
@@ -22,7 +20,11 @@ if (!apiKey) {
   process.exit(1);
 }
 
-const client = new OpenAI({ baseURL: baseUrl, apiKey });
+const client = new OpenAI({
+  baseURL: baseUrl,
+  apiKey,
+  maxRetries: 1,
+});
 
 /**
  * 测试 chat completions 基础调用
