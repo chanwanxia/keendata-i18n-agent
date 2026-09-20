@@ -2,38 +2,53 @@
 // 包含 activeLanguage-当前语言计算属性、changeLanguage-切换语言方法、languages-语言列表计算属性
 import { i18nMixin as voerkai18nMixin } from "@voerkai18n/vue2";
 
+const HTML_LANG_MAP = {
+  zh: "zh-CN",
+  en: "en",
+  jp: "ja",
+  ar: "ar",
+};
+
 export const i18nMixin = {
   mixins: [voerkai18nMixin()],
   provide() {
     return {
-      htmlDir: this.htmlDir,
+      htmlDir: this.htmlDirection,
     };
   },
-  mounted() {
-    document.documentElement.setAttribute("dir", this.htmlDirection);
-  },
   watch: {
-    htmlDirection(dir) {
-      document.documentElement.setAttribute("dir", dir);
+    currentLanguage: {
+      immediate: true,
+      handler(language) {
+        this.syncHtmlAttributes(language);
+      },
     },
   },
   computed: {
+    currentLanguage() {
+      return this.activeLanguage || localStorage.getItem("language") || "zh";
+    },
     isRtl() {
-      const lang = this.activeLanguage || localStorage.getItem("language") || "zh";
-      return ["ar"].includes(lang);
+      return this.currentLanguage === "ar";
     },
     htmlDirection() {
       return this.isRtl ? "rtl" : "ltr";
     },
     isZh() {
-      return this.activeLanguage === "zh";
+      return this.currentLanguage === "zh";
     },
   },
   methods: {
+    // 同步根节点的语言方向和语言标记
+    syncHtmlAttributes(language = this.currentLanguage) {
+      document.documentElement.setAttribute("dir", this.isRtl ? "rtl" : "ltr");
+      document.documentElement.setAttribute("lang", HTML_LANG_MAP[language] || "zh-CN");
+    },
+
     languageChange(language) {
-      this.changeLanguage(language);
-      document.documentElement.setAttribute("dir", this.htmlDirection);
       localStorage.setItem("language", language);
+      this.changeLanguage(language);
+      this.syncHtmlAttributes(language);
       location.reload();
     },
 
