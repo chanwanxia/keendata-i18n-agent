@@ -1,6 +1,6 @@
 {
   "name": "@kd/i18n",
-  "version": "0.2.3",
+  "version": "1.0.0",
   "description": "One-command i18n automation for KeenData Vue2 projects",
   "keywords": [
     "i18n",
@@ -32,7 +32,7 @@
     "lint": "sh -c 'if [ \"$1\" = \"fix\" ]; then shift; eslint --fix src/ test/ bin/ \"$@\"; else eslint src/ test/ bin/ \"$@\"; fi' --",
     "lint:fix": "pnpm lint fix",
     "dev:help": "node bin/kd-i18n.js help",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "prepublishOnly": "npm test",
     "i18n:extract": "voerkai18n extract -D && prettier --write src/languages/*.*",
     "i18n:compile": "voerkai18n compile && prettier --write src/languages/*.*"
