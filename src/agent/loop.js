@@ -14,6 +14,8 @@ const CONTEXT_TRIM_KEEP_RECENT = 8;
 const CONTEXT_TRIM_KEEP_CHARS = 120;
 /** 无限模式下连续相同工具调用的循环检测阈值 */
 const LOOP_DETECT_THRESHOLD = 5;
+/** 存在未通过检查时，允许 LLM 连续无工具回复的最大次数 */
+const UNRESOLVED_NO_TOOL_THRESHOLD = 3;
 /** 无限模式的安全上限，防止真正的死循环 */
 const SAFETY_CAP = 2000;
 /** 这些工具返回 ok=false 时仍属于可供 agent 处理的业务结果 */
@@ -35,8 +37,12 @@ function formatToolResult(toolName, result) {
 
   switch (toolName) {
     case "read_file":
-      return result.error
-        ? `错误: ${result.error}`
+      if (result.error) return `错误: ${result.error}`;
+      if (result.skipped) {
+        return `跳过读取 ${result.relativePath}: ${result.reason || "不适合读取全文"}`;
+      }
+      return result.truncated
+        ? `读取 ${result.relativePath} (${(result.content || "").length}/${result.originalLength} 字符，已截断)`
         : `读取 ${result.relativePath} (${(result.content || "").length} 字符)`;
 
     case "write_file":
@@ -321,6 +327,20 @@ function isLooping(recentCalls) {
 }
 
 /**
+ * 构造未通过检查场景下的继续执行提示，避免 assistant 提前结束。
+ * @param {string[]} unresolvedChecks - 当前仍未通过的检查名称
+ * @returns {string} 继续执行提示
+ */
+function buildUnresolvedCheckContinuationMessage(unresolvedChecks) {
+  const checks = unresolvedChecks.join("、");
+  return [
+    `当前仍有未通过检查：${checks}。这不是完成状态，不能停止或输出最终结论。`,
+    "请继续调用工具修复并复查：validate_translations 未通过时，优先继续调用 translate_entries（固定 LLM 增量补翻，不传 provider/force），然后重新调用 validate_translations；doctor 未通过时，使用 scaffold/inject 等确定性工具修复后重新 doctor；check_generated_files 未通过时，先补齐编译/产物检查。",
+    "只有所有未通过检查都清零后，才允许结束流程。",
+  ].join("");
+}
+
+/**
  * 根据项目根路径计算 checkpoint 文件路径
  * 使用项目路径的 MD5 hash 作为文件名，避免路径中的特殊字符
  * @param {string} projectRoot - 项目根路径
@@ -423,6 +443,7 @@ async function runAgentLoop(
   let stepCount = 0;
   const recentCalls = [];
   let unresolvedChecks = [];
+  let consecutiveUnresolvedNoTool = 0;
   const startTime = Date.now();
 
   // --no-resume：清除旧 checkpoint，从头开始
@@ -548,25 +569,46 @@ async function runAgentLoop(
     // 没有 tool_calls 说明 agent 认为任务完成了
     if (!message.tool_calls || message.tool_calls.length === 0) {
       if (unresolvedChecks.length > 0) {
+        consecutiveUnresolvedNoTool += 1;
+        if (consecutiveUnresolvedNoTool >= UNRESOLVED_NO_TOOL_THRESHOLD) {
+          if (projectRoot) {
+            saveCheckpoint(projectRoot, {
+              messages,
+              stepCount: step + 1,
+              timeline,
+              model,
+              projectRoot,
+              unresolvedChecks,
+            });
+          }
+          return {
+            ok: false,
+            message: `LLM 连续 ${UNRESOLVED_NO_TOOL_THRESHOLD} 轮未调用工具处理 ${unresolvedChecks.join(
+              "、",
+            )}，agent 已停止以避免空转。${formatResumeHint(Boolean(projectRoot))}`,
+            stepCount: step + 1,
+            timeline,
+            unresolvedChecks,
+          };
+        }
+        messages.push({
+          role: "user",
+          content: buildUnresolvedCheckContinuationMessage(unresolvedChecks),
+        });
+        stepCount = step + 1;
         if (projectRoot) {
           saveCheckpoint(projectRoot, {
             messages,
-            stepCount: step + 1,
+            stepCount,
             timeline,
             model,
             projectRoot,
             unresolvedChecks,
           });
         }
-        return {
-          ok: false,
-          message: `${unresolvedChecks.join(
-            "、",
-          )} 检查未通过，agent 已中断，未宣称流程成功。`,
-          stepCount: step + 1,
-          timeline,
-        };
+        continue;
       }
+      consecutiveUnresolvedNoTool = 0;
       if (projectRoot) clearCheckpoint(projectRoot);
       const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(
@@ -579,6 +621,7 @@ async function runAgentLoop(
         timeline,
       };
     }
+    consecutiveUnresolvedNoTool = 0;
 
     // 依次执行每个 tool call
     for (const toolCall of message.tool_calls) {

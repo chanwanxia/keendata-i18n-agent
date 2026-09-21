@@ -515,12 +515,18 @@ test("translate_entries provider 执行失败时立即中断", async () => {
 });
 
 test("检查未通过时不能直接宣称完成", async () => {
+  let doctorCallCount = 0;
   const tools = [
     {
       name: "doctor",
       description: "failed check",
       parameters: { type: "object", properties: {} },
-      execute: () => ({ ok: false, summary: { failCount: 1 } }),
+      execute: () => {
+        doctorCallCount += 1;
+        return doctorCallCount === 1
+          ? { ok: false, summary: { failCount: 1 } }
+          : { ok: true, summary: { failCount: 0 } };
+      },
     },
   ];
 
@@ -552,6 +558,33 @@ test("检查未通过时不能直接宣称完成", async () => {
         },
       ],
     },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_2",
+                function: { name: "doctor", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "完成",
+            tool_calls: null,
+          },
+        },
+      ],
+    },
   ]);
 
   const result = await runAgentLoop(
@@ -562,8 +595,10 @@ test("检查未通过时不能直接宣称完成", async () => {
     { maxSteps: 10 },
   );
 
-  assert.strictEqual(result.ok, false);
-  assert.ok(result.message.includes("doctor"));
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.message, "完成");
+  assert.strictEqual(doctorCallCount, 2);
+  assert.strictEqual(result.timeline.length, 2);
 });
 
 test("恢复 checkpoint 时重新核对并清除已修复的检查", async () => {

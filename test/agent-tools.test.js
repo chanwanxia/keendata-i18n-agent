@@ -65,8 +65,37 @@ test("read_file 对不存在的文件返回 error", () => {
   assert.ok(result.error);
 });
 
-test("write_file 写入文件内容", () => {
-  const dir = createTempProject({});
+test("read_file 跳过翻译资源全文读取", () => {
+  const dir = createTempProject({
+    "src/languages/translates/default.json": JSON.stringify({ hello: "你好" }),
+  });
+  const tools = createTools(dir, CONFIG);
+  const readTool = tools.find((t) => t.name === "read_file");
+  const result = readTool.execute({
+    relativePath: "src/languages/translates/default.json",
+  });
+
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.content, "");
+  assert.match(result.reason, /translate_entries/);
+});
+
+test("read_file 截断超大业务文件", () => {
+  const largeContent = "a".repeat(60000);
+  const dir = createTempProject({
+    "src/large.js": largeContent,
+  });
+  const tools = createTools(dir, CONFIG);
+  const readTool = tools.find((t) => t.name === "read_file");
+  const result = readTool.execute({ relativePath: "src/large.js" });
+
+  assert.strictEqual(result.truncated, true);
+  assert.strictEqual(result.originalLength, largeContent.length);
+  assert.ok(result.content.length < largeContent.length);
+});
+
+test("write_file 覆盖已存在文件内容", () => {
+  const dir = createTempProject({ "src/new.js": "" });
   const tools = createTools(dir, CONFIG);
   const writeTool = tools.find((t) => t.name === "write_file");
   const result = writeTool.execute({
@@ -78,17 +107,68 @@ test("write_file 写入文件内容", () => {
   assert.ok(content.includes("const x = 1"));
 });
 
-test("write_file 自动创建嵌套目录", () => {
+test("write_file 保留 iconfont 私有区 Unicode 转义", () => {
+  const dir = createTempProject({ "src/draw-fun.js": "" });
+  const tools = createTools(dir, CONFIG);
+  const writeTool = tools.find((t) => t.name === "write_file");
+  const result = writeTool.execute({
+    relativePath: "src/draw-fun.js",
+    content: String.raw`const icon = "\ue725";
+const title = "\u4e2d\u6587\u540d";`,
+  });
+  assert.strictEqual(result.written, true);
+  const content = fs.readFileSync(
+    path.join(dir, "src/draw-fun.js"),
+    "utf8",
+  );
+  assert.ok(content.includes(String.raw`const icon = "\ue725";`), `iconfont 私有区不应反解码，实际: ${content}`);
+  assert.ok(content.includes('const title = "中文名";'), `普通中文 Unicode 仍应还原，实际: ${content}`);
+});
+
+test("write_file 拒绝删除已有注释", () => {
+  const dir = createTempProject({
+    "src/index.vue": `<script>
+export default {
+  methods: {
+    // 上线/下线的popConfig
+    linePopConfig() {
+      return "确认";
+    },
+  },
+};
+</script>`,
+  });
+  const tools = createTools(dir, CONFIG);
+  const writeTool = tools.find((t) => t.name === "write_file");
+  const result = writeTool.execute({
+    relativePath: "src/index.vue",
+    content: `<script>
+export default {
+  methods: {
+    linePopConfig() {
+      return this.t("确认");
+    },
+  },
+};
+</script>`,
+  });
+  const content = fs.readFileSync(path.join(dir, "src/index.vue"), "utf8");
+  assert.ok(result.error);
+  assert.match(result.error, /删除了已有注释/);
+  assert.ok(content.includes("// 上线/下线的popConfig"));
+});
+
+test("write_file 拒绝创建不存在的文件", () => {
   const dir = createTempProject({});
   const tools = createTools(dir, CONFIG);
   const writeTool = tools.find((t) => t.name === "write_file");
-  writeTool.execute({
+  const result = writeTool.execute({
     relativePath: "src/deep/nested/file.js",
     content: "ok",
   });
-  assert.ok(
-    fs.existsSync(path.join(dir, "src/deep/nested/file.js")),
-  );
+  assert.ok(result.error);
+  assert.match(result.error, /禁止创建文件/);
+  assert.ok(!fs.existsSync(path.join(dir, "src/deep/nested/file.js")));
 });
 
 test("list_files 列出目录下文件", () => {
@@ -170,6 +250,53 @@ test("validate_translations 返回校验报告", () => {
   const result = validateTool.execute({});
   assert.ok(result.summary.entryCount >= 2);
   assert.ok(result.summary.missingLanguageCount >= 3);
+});
+
+test("translate_entries 在 agent 中固定使用 llm，不切换到 baidu", async () => {
+  const oldLlmKey = process.env.LLM_API_KEY;
+  const oldBaiduAppid = process.env.BAIDU_APPID;
+  const oldBaiduAppkey = process.env.BAIDU_APPKEY;
+  try {
+    delete process.env.LLM_API_KEY;
+    delete process.env.BAIDU_APPID;
+    delete process.env.BAIDU_APPKEY;
+
+    const dir = createTempProject({
+      "src/languages/translates/default.json": JSON.stringify({
+        你好: { en: "Hello", jp: "こんにちは", ar: "مرحبا" },
+      }),
+    });
+    const tools = createTools(dir, {
+      ...CONFIG,
+      translate: { provider: "baidu" },
+    });
+    const translateTool = tools.find((t) => t.name === "translate_entries");
+
+    const result = await translateTool.execute({ provider: "baidu" });
+
+    assert.notStrictEqual(result.provider.used, "baidu");
+    assert.doesNotMatch(result.provider.message || "", /BAIDU_APPID/);
+  } finally {
+    if (oldLlmKey) process.env.LLM_API_KEY = oldLlmKey;
+    else delete process.env.LLM_API_KEY;
+    if (oldBaiduAppid) process.env.BAIDU_APPID = oldBaiduAppid;
+    else delete process.env.BAIDU_APPID;
+    if (oldBaiduAppkey) process.env.BAIDU_APPKEY = oldBaiduAppkey;
+    else delete process.env.BAIDU_APPKEY;
+  }
+});
+
+test("translate_entries 工具定义不暴露 provider 或 force 参数", () => {
+  const dir = createTempProject({});
+  const defs = toToolDefinitions(createTools(dir, CONFIG));
+  const translateDef = defs.find(
+    (item) => item.function.name === "translate_entries",
+  );
+
+  assert.deepStrictEqual(
+    Object.keys(translateDef.function.parameters.properties),
+    [],
+  );
 });
 
 test("check_generated_files 返回缺失文件", () => {

@@ -525,7 +525,7 @@ function transformTemplate(source, preset, config) {
       // 幂等性检查：已包含 t() 调用的文本不再重复包裹
       if (/\bt\s*\(/.test(rawText)) return match;
       replacements += 1;
-      const trimmed = rawText.trim();
+      const trimmed = normalizeTemplateTextForTranslate(rawText.trim());
       const leading = rawText.match(/^\s*/)[0];
       const trailing = rawText.match(/\s*$/)[0];
       return `>${leading}{{ ${buildTranslateCallSource("t", trimmed)} }}${trailing}<`;
@@ -647,6 +647,8 @@ function normalizeMultilineTranslateCalls(source) {
     if (closingQuoteIndex === -1) continue;
 
     const originalText = source.slice(quoteIndex + 1, closingQuoteIndex);
+    normalizedText = normalizeTranslateStringLiteralWhitespace(normalizedText);
+
     if (originalText === normalizedText) {
       translateCallPattern.lastIndex = closingQuoteIndex + 1;
       continue;
@@ -666,6 +668,51 @@ function normalizeMultilineTranslateCalls(source) {
       result.slice(0, patch.start) + patch.code + result.slice(patch.end);
   });
   return result;
+}
+
+/**
+ * 归一化普通模板文案中的源码折行空白，避免翻译源文保留 "\n + 缩进"。
+ * @param {string} text - 模板文本内容
+ * @returns {string} 归一化后的模板文本
+ */
+function normalizeTemplateTextForTranslate(text) {
+  if (!hasLineBreak(text) || shouldPreserveTemplateTextLineBreaks(text)) {
+    return text;
+  }
+  return text.replace(/(?:[ \t]*(?:\r?\n|\r)[ \t]*)+/g, " ");
+}
+
+/**
+ * 归一化 t() 字符串字面量中的折行转义，修复历史或 LLM 写入产生的 "\n + 缩进"。
+ * @param {string} text - 字符串字面量内部源码
+ * @returns {string} 归一化后的字符串字面量内部源码
+ */
+function normalizeTranslateStringLiteralWhitespace(text) {
+  if (!/\\[rn]/.test(text) || shouldPreserveTemplateTextLineBreaks(text)) {
+    return text;
+  }
+  return text.replace(/(?:[ \t]*(?:\\r\\n|\\n|\\r)[ \t]*)+/g, " ");
+}
+
+/**
+ * 判断文本是否包含真实换行。
+ * @param {string} text - 待检测文本
+ * @returns {boolean} 是否包含换行
+ */
+function hasLineBreak(text) {
+  return /[\r\n]/.test(text);
+}
+
+/**
+ * 判断模板文案中的换行是否更像有语义的多行正则/规则文本，应原样保留。
+ * @param {string} text - 模板文本或字符串字面量内部源码
+ * @returns {boolean} 是否保留换行
+ */
+function shouldPreserveTemplateTextLineBreaks(text) {
+  if (!hasLineBreak(text) && !/\\[rn]/.test(text)) return false;
+  return /(?:\\\\[dDsSwW.]|\\[dDsSwW.]|\[[^\]]*\\u[0-9a-fA-F]{4}|[$^][][{}()*+?.|])/.test(
+    text,
+  );
 }
 
 /**
@@ -1080,13 +1127,33 @@ function isRegExpConstructorStringStart(code, quoteIndex) {
  */
 function canDecodeUnicodeEscape(code, index) {
   if (code[index] !== "\\" || code[index + 1] !== "u") return false;
-  if (!/^[0-9a-fA-F]{4}$/.test(code.slice(index + 2, index + 6))) return false;
+  const hex = code.slice(index + 2, index + 6);
+  if (!/^[0-9a-fA-F]{4}$/.test(hex)) return false;
+  if (!isReadableTextUnicodeCodePoint(parseInt(hex, 16))) return false;
 
   let slashCount = 0;
   for (let i = index - 1; i >= 0 && code[i] === "\\"; i -= 1) {
     slashCount += 1;
   }
   return slashCount % 2 === 0;
+}
+
+/**
+ * 判断 Unicode 码点是否属于应恢复为源码可读文本的范围，避开 iconfont 私有区。
+ * @param {number} codePoint - Unicode 码点
+ * @returns {boolean} 是否应恢复为实际字符
+ */
+function isReadableTextUnicodeCodePoint(codePoint) {
+  return (
+    (codePoint >= 0x0600 && codePoint <= 0x06ff) ||
+    (codePoint >= 0x0750 && codePoint <= 0x077f) ||
+    (codePoint >= 0x3000 && codePoint <= 0x303f) ||
+    (codePoint >= 0x3040 && codePoint <= 0x30ff) ||
+    (codePoint >= 0x3400 && codePoint <= 0x9fff) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7af) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xff00 && codePoint <= 0xffef)
+  );
 }
 
 /**
@@ -1478,6 +1545,22 @@ function transformJsFile(source, options) {
       }
 
       if (pathRef.isTemplateLiteral()) {
+        const htmlTemplate =
+          pathRef.node.expressions.length === 0
+            ? buildHtmlStringTranslateTemplateLiteral(
+                pathRef.node.quasis[0]?.value.cooked || "",
+                translator,
+              )
+            : null;
+        if (htmlTemplate) {
+          patches.push({
+            start: pathRef.node.start,
+            end: pathRef.node.end,
+            code: htmlTemplate,
+          });
+          pathRef.skip();
+          return;
+        }
         const callExpression = buildTranslateCallFromTemplateLiteral(
           pathRef.node,
           translator,
@@ -1496,6 +1579,19 @@ function transformJsFile(source, options) {
 
       if (pathRef.isStringLiteral() && shouldTransformStringLiteral(pathRef)) {
         if (!containsChinese(pathRef.node.value)) return;
+        const htmlTemplate = buildHtmlStringTranslateTemplateLiteral(
+          pathRef.node.value,
+          translator,
+        );
+        if (htmlTemplate) {
+          patches.push({
+            start: pathRef.node.start,
+            end: pathRef.node.end,
+            code: htmlTemplate,
+          });
+          pathRef.skip();
+          return;
+        }
         const callExpr = buildTranslateCallExpression(
           translator,
           pathRef.node.value,
@@ -1721,6 +1817,22 @@ function transformInlineExpression(
       }
 
       if (pathRef.isTemplateLiteral()) {
+        const htmlTemplate =
+          pathRef.node.expressions.length === 0
+            ? buildHtmlStringTranslateTemplateLiteral(
+                pathRef.node.quasis[0]?.value.cooked || "",
+                translator,
+              )
+            : null;
+        if (htmlTemplate) {
+          patches.push({
+            start: pathRef.node.start,
+            end: pathRef.node.end,
+            code: htmlTemplate,
+          });
+          pathRef.skip();
+          return;
+        }
         const callExpression = buildTranslateCallFromTemplateLiteral(
           pathRef.node,
           translator,
@@ -1741,6 +1853,19 @@ function transformInlineExpression(
         shouldTransformInlineStringLiteral(pathRef)
       ) {
         if (!containsChinese(pathRef.node.value)) return;
+        const htmlTemplate = buildHtmlStringTranslateTemplateLiteral(
+          pathRef.node.value,
+          translator,
+        );
+        if (htmlTemplate) {
+          patches.push({
+            start: pathRef.node.start,
+            end: pathRef.node.end,
+            code: htmlTemplate,
+          });
+          pathRef.skip();
+          return;
+        }
         const callExpr = buildTranslateCallExpression(
           translator,
           pathRef.node.value,
@@ -1808,7 +1933,7 @@ function convertInterpolatedTemplateText(rawText) {
 
   const leading = templateText.match(/^\s*/)[0];
   const trailing = templateText.match(/\s*$/)[0];
-  const trimmed = templateText.trim();
+  const trimmed = normalizeTemplateTextForTranslate(templateText.trim());
   if (!trimmed) return { changed: false, replacements: 0, code: rawText };
 
   return {
@@ -1849,7 +1974,11 @@ function buildTranslateCallFromTemplateLiteral(node, translator) {
 
   const text = textParts.join("");
   if (!containsChinese(text)) return null;
-  return buildTranslateCallExpression(translator, text, args);
+  return buildTranslateCallExpression(
+    translator,
+    normalizePlaceholderWrappedDoubleQuotes(text),
+    args,
+  );
 }
 
 /**
@@ -1929,7 +2058,39 @@ function buildTranslateCallFromConcatenation(node, translator) {
   });
 
   if (!containsChinese(text)) return null;
-  return buildTranslateCallExpression(translator, text, args);
+  return buildTranslateCallExpression(
+    translator,
+    normalizePlaceholderWrappedDoubleQuotes(text),
+    args,
+  );
+}
+
+/**
+ * 将占位符所在片段的英文双引号规范为单引号，避免生成 t("...\"实体{}\"...")。
+ * @param {string} text - 带 {} 占位符的翻译原文
+ * @returns {string} 规范化后的翻译原文
+ */
+function normalizePlaceholderWrappedDoubleQuotes(text) {
+  return text.replace(/"([^"{}]*\{\}[^"{}]*)"/g, "'$1'");
+}
+
+/**
+ * 将简单 HTML 字符串中的中文文本节点转换为模板字面量插值，保留标签结构。
+ * @param {string} text - 原始字符串文本
+ * @param {string} translator - 翻译函数名
+ * @returns {string|null} 模板字面量源码，无法安全处理时返回 null
+ */
+function buildHtmlStringTranslateTemplateLiteral(text, translator) {
+  if (/[`\\]|\$\{/.test(text)) return null;
+
+  const match = text.match(
+    /^<([a-zA-Z][\w:-]*)([^>]*)>([^<>]*[\u3400-\u9fff][^<>]*)<\/\1>$/,
+  );
+  if (!match) return null;
+
+  const [, tagName, attrs, innerText] = match;
+  const translated = buildTranslateCallSource(translator, innerText);
+  return "`<" + tagName + attrs + ">${" + translated + "}</" + tagName + ">`";
 }
 
 /**

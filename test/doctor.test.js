@@ -6,6 +6,7 @@ const path = require("path");
 const {
   checkDependencies,
   checkKdComponentsVersion,
+  checkLayoutHeaderLanguageSwitcher,
 } = require("../src/kit/doctor");
 
 /**
@@ -55,4 +56,46 @@ test("checkDependencies 缺少 @kd/components 时给出自动安装建议", () =
 
   assert.strictEqual(result.status, "fail");
   assert.match(result.suggestion, /@kd\/components@\^5\.2\.2 --save-prod/);
+});
+
+test("checkLayoutHeaderLanguageSwitcher 固定路径缺失时只提示 warn", () => {
+  const projectRoot = createTempProject({});
+  fs.mkdirSync(path.join(projectRoot, "src/layout/nav-head"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(projectRoot, "src/layout/nav-head/index.vue"),
+    '<template><div class="right-box"></div></template>',
+  );
+
+  const result = checkLayoutHeaderLanguageSwitcher(projectRoot);
+
+  assert.strictEqual(result.status, "warn");
+  assert.match(result.message, /已跳过 layout-header/);
+});
+
+test("checkLayoutHeaderLanguageSwitcher 缺少语言切换器时不阻断 doctor", () => {
+  const projectRoot = createTempProject({});
+  const headerPath = path.join(projectRoot, "src/layout/layout-header/index.vue");
+  fs.mkdirSync(path.dirname(headerPath), { recursive: true });
+  fs.writeFileSync(headerPath, '<template><div class="right-box"></div></template>');
+
+  const result = checkLayoutHeaderLanguageSwitcher(projectRoot);
+
+  assert.strictEqual(result.status, "warn");
+  assert.match(result.suggestion, /符合模板结构时执行 inject/);
+});
+
+test("checkLayoutHeaderLanguageSwitcher 检测到语言切换器时通过", () => {
+  const projectRoot = createTempProject({});
+  const headerPath = path.join(projectRoot, "src/layout/layout-header/index.vue");
+  fs.mkdirSync(path.dirname(headerPath), { recursive: true });
+  fs.writeFileSync(
+    headerPath,
+    '<template><kd-select :value="activeLanguage" @change="languageChange"></kd-select></template>',
+  );
+
+  const result = checkLayoutHeaderLanguageSwitcher(projectRoot);
+
+  assert.strictEqual(result.status, "pass");
 });

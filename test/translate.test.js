@@ -211,6 +211,57 @@ test("LLM 翻译批次进度串行时不显示冗余范围", () => {
   assert.strictEqual(formatBatchProgressLabel(1, 3, 11), "1-3/11");
 });
 
+test("LLM 翻译按条数和字符数拆分批次", () => {
+  const { buildLlmTranslateBatches } = require("../src/kit/translate");
+
+  const batches = buildLlmTranslateBatches(
+    ["a".repeat(800), "b".repeat(800), "c", "d", "e"],
+    { batchSize: 3, maxChars: 1000 },
+  );
+
+  assert.deepStrictEqual(
+    batches.map((batch) => batch.length),
+    [1, 3, 1],
+  );
+});
+
+test("LLM 翻译批次超时后返回 provider 失败", async () => {
+  const projectRoot = createTempProject({
+    超时文案: { en: "", jp: "", ar: "" },
+  });
+  const oldKey = process.env.LLM_API_KEY;
+  const oldTimeout = process.env.LLM_TRANSLATE_TIMEOUT_MS;
+  process.env.LLM_API_KEY = "test-key";
+  process.env.LLM_TRANSLATE_TIMEOUT_MS = "10";
+
+  const fakeClient = {
+    chat: {
+      completions: {
+        create: async () => new Promise(() => {}),
+      },
+    },
+  };
+
+  try {
+    const { translateTranslations } = require("../src/kit/translate");
+    const result = await translateTranslations(
+      projectRoot,
+      { ...CONFIG, translate: { ...CONFIG.translate, provider: "llm" } },
+      { client: fakeClient },
+    );
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.provider.ok, false);
+    assert.strictEqual(result.provider.failedBatchCount, 1);
+    assert.match(result.provider.message, /LLM 翻译失败/);
+  } finally {
+    if (oldKey) process.env.LLM_API_KEY = oldKey;
+    else delete process.env.LLM_API_KEY;
+    if (oldTimeout) process.env.LLM_TRANSLATE_TIMEOUT_MS = oldTimeout;
+    else delete process.env.LLM_TRANSLATE_TIMEOUT_MS;
+  }
+});
+
 test("占位符校验检测不匹配", async () => {
   const projectRoot = createTempProject({
     "操作{}失败": { en: "Operation failed", jp: "", ar: "" },

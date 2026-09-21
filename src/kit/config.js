@@ -7,7 +7,14 @@ const CONFIG_FILE = "i18n-kit.config.json";
 const DEFAULT_CONFIG = {
   include: ["src"],
   extensions: [".js", ".vue"],
-  excludeDirs: ["node_modules", "dist", ".git", ".idea"],
+  excludeDirs: [
+    "node_modules",
+    "dist",
+    ".git",
+    ".idea",
+    "src/assets",
+    "src/build",
+  ],
   excludeFiles: [
     "src/languages/index.js",
     "src/languages/idMap.js",
@@ -74,6 +81,14 @@ function loadProjectConfig(projectRoot) {
   return {
     ...suggestedConfig,
     ...userConfig,
+    excludeDirs: mergeConfigArrays(
+      suggestedConfig.excludeDirs,
+      userConfig.excludeDirs,
+    ),
+    excludeFiles: mergeConfigArrays(
+      suggestedConfig.excludeFiles,
+      userConfig.excludeFiles,
+    ),
     hardcodedChinese: {
       ...suggestedConfig.hardcodedChinese,
       ...(userConfig.hardcodedChinese || {}),
@@ -87,6 +102,16 @@ function loadProjectConfig(projectRoot) {
       },
     },
   };
+}
+
+/**
+ * 合并默认配置数组和用户配置数组，避免用户追加排除项时覆盖安全默认值。
+ * @param {array} baseItems - 默认配置数组
+ * @param {array|undefined} userItems - 用户配置数组
+ * @returns {array} 去重后的合并数组
+ */
+function mergeConfigArrays(baseItems, userItems) {
+  return [...new Set([...(baseItems || []), ...(userItems || [])])];
 }
 
 /**

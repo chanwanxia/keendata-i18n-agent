@@ -342,6 +342,14 @@ function applyGlossaryPostProcess(
  */
 /** LLM 翻译默认并发批次数，默认串行以降低触发 429 的概率 */
 const DEFAULT_LLM_BATCH_CONCURRENCY = 1;
+/** LLM 翻译单批默认源文条数上限，避免长文案集中到一个请求 */
+const DEFAULT_LLM_TRANSLATE_BATCH_SIZE = 8;
+/** LLM 翻译单批默认源文字符上限 */
+const DEFAULT_LLM_TRANSLATE_BATCH_MAX_CHARS = 1500;
+/** LLM 翻译单批默认超时时间，避免模型路由长期保持连接但不返回 */
+const DEFAULT_LLM_TRANSLATE_TIMEOUT_MS = 5 * 60 * 1000;
+/** LLM 翻译单批等待中的心跳日志间隔 */
+const LLM_TRANSLATE_HEARTBEAT_MS = 30 * 1000;
 
 /**
  * 解析 LLM 翻译批次并发数，支持 LLM_BATCH_CONCURRENCY 覆盖。
@@ -351,6 +359,42 @@ function resolveLlmBatchConcurrency() {
   const parsed = Number(process.env.LLM_BATCH_CONCURRENCY);
   if (!Number.isInteger(parsed) || parsed < 1) {
     return DEFAULT_LLM_BATCH_CONCURRENCY;
+  }
+  return parsed;
+}
+
+/**
+ * 解析 LLM 翻译单批源文条数上限。
+ * @returns {number} 至少为 1 的单批源文条数上限
+ */
+function resolveLlmTranslateBatchSize() {
+  const parsed = Number(process.env.LLM_TRANSLATE_BATCH_SIZE);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_LLM_TRANSLATE_BATCH_SIZE;
+  }
+  return parsed;
+}
+
+/**
+ * 解析 LLM 翻译单批源文字符上限。
+ * @returns {number} 至少为 1 的单批源文字符上限
+ */
+function resolveLlmTranslateBatchMaxChars() {
+  const parsed = Number(process.env.LLM_TRANSLATE_BATCH_MAX_CHARS);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_LLM_TRANSLATE_BATCH_MAX_CHARS;
+  }
+  return parsed;
+}
+
+/**
+ * 解析 LLM 翻译批次超时时间。
+ * @returns {number} 超时时间（毫秒）
+ */
+function resolveLlmTranslateTimeoutMs() {
+  const parsed = Number(process.env.LLM_TRANSLATE_TIMEOUT_MS);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return DEFAULT_LLM_TRANSLATE_TIMEOUT_MS;
   }
   return parsed;
 }
@@ -452,16 +496,18 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     };
   }
 
-  const batchSize = 50;
   const sourceTexts = [...new Set(missingEntries.map((e) => e.sourceText))];
   const missingKeySet = new Set(
     missingEntries.map((entry) => `${entry.sourceText}\u0000${entry.language}`),
   );
   const savedKeySet = new Set();
-  const totalBatches = Math.ceil(sourceTexts.length / batchSize);
+  const batches = buildLlmTranslateBatches(sourceTexts);
+  const totalBatches = batches.length;
   const batchConcurrency = resolveLlmBatchConcurrency();
+  const batchTimeoutMs = resolveLlmTranslateTimeoutMs();
   let translatedCount = 0;
   let completedBatches = 0;
+  let failedBatchCount = 0;
 
   // 按并发数分组处理批次，每组完成后写入文件
   for (let gi = 0; gi < totalBatches; gi += batchConcurrency) {
@@ -479,19 +525,29 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     // 按配置并发发送当前组的所有批次
     const batchPromises = [];
     for (let bi = gi; bi < groupEnd; bi += 1) {
-      const start = bi * batchSize;
-      const batch = sourceTexts.slice(start, start + batchSize);
+      const batch = batches[bi];
       batchPromises.push(
-        callLlmTranslate(client, batch, targetLanguages, glossary, model)
+        withLlmBatchTimeout(
+          callLlmTranslate(client, batch, targetLanguages, glossary, model),
+          bi + 1,
+          totalBatches,
+          batchTimeoutMs,
+        )
           .then((results) => ({ results, batchNum: bi + 1, ok: true }))
           .catch((error) => {
             console.warn(`[i18n-kit] LLM 翻译批次 ${bi + 1} 失败: ${error.message}`);
-            return { results: [], batchNum: bi + 1, ok: false };
+            return {
+              results: [],
+              batchNum: bi + 1,
+              ok: false,
+              message: error.message,
+            };
           }),
       );
     }
 
     const settled = await Promise.all(batchPromises);
+    failedBatchCount += settled.filter((item) => !item.ok).length;
 
     // 同步应用翻译结果到 translations 对象
     let groupTranslated = 0;
@@ -532,6 +588,20 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     }
   }
 
+  if (failedBatchCount > 0 && translatedCount === 0) {
+    return {
+      ok: false,
+      used: "llm",
+      executed: true,
+      translatedCount,
+      remainingCount: missingEntries.length,
+      sourceTextCount: sourceTexts.length,
+      missingEntryCount: missingEntries.length,
+      failedBatchCount,
+      message: `LLM 翻译失败: ${failedBatchCount}/${totalBatches} 个批次失败，未保存任何翻译`,
+    };
+  }
+
   return {
     ok: true,
     used: "llm",
@@ -542,6 +612,75 @@ async function runLlmTranslate(projectRoot, config, options = {}) {
     missingEntryCount: missingEntries.length,
     message: `LLM 翻译完成: ${translatedCount}/${missingEntries.length} 个缺失翻译已保存`,
   };
+}
+
+/**
+ * 按条数和源文字符数切分 LLM 翻译批次。
+ * @param {string[]} sourceTexts - 去重后的源文列表
+ * @param {object} options - 可选配置 { batchSize, maxChars }
+ * @returns {string[][]} 批次数组
+ */
+function buildLlmTranslateBatches(sourceTexts, options = {}) {
+  const batchSize = options.batchSize || resolveLlmTranslateBatchSize();
+  const maxChars = options.maxChars || resolveLlmTranslateBatchMaxChars();
+  const batches = [];
+  let current = [];
+  let currentChars = 0;
+
+  sourceTexts.forEach((sourceText) => {
+    const textLength = String(sourceText || "").length;
+    const wouldExceedSize = current.length >= batchSize;
+    const wouldExceedChars =
+      current.length > 0 && currentChars + textLength > maxChars;
+
+    if (wouldExceedSize || wouldExceedChars) {
+      batches.push(current);
+      current = [];
+      currentChars = 0;
+    }
+
+    current.push(sourceText);
+    currentChars += textLength;
+  });
+
+  if (current.length > 0) {
+    batches.push(current);
+  }
+
+  return batches;
+}
+
+/**
+ * 为 LLM 翻译批次增加超时和等待心跳日志。
+ * @param {Promise<object[]>} promise - 原始批次翻译 Promise
+ * @param {number} batchNum - 当前批次序号
+ * @param {number} totalBatches - 总批次数
+ * @param {number} timeoutMs - 超时时间（毫秒）
+ * @returns {Promise<object[]>} 带超时保护的 Promise
+ */
+function withLlmBatchTimeout(promise, batchNum, totalBatches, timeoutMs) {
+  let timeoutId;
+  let heartbeatId;
+  const startTime = Date.now();
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`等待 LLM 响应超过 ${Math.ceil(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+
+    heartbeatId = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      console.log(
+        `[i18n-kit] LLM 翻译批次 ${batchNum}/${totalBatches} 等待中... ${elapsed}s`,
+      );
+    }, LLM_TRANSLATE_HEARTBEAT_MS);
+    if (heartbeatId.unref) heartbeatId.unref();
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+    clearInterval(heartbeatId);
+  });
 }
 
 /**
@@ -669,6 +808,9 @@ function normalizePlaceholderTokens(translatedText, tokens) {
 
 module.exports = {
   formatBatchProgressLabel,
+  buildLlmTranslateBatches,
   resolveLlmBatchConcurrency,
+  resolveLlmTranslateBatchMaxChars,
+  resolveLlmTranslateBatchSize,
   translateTranslations,
 };

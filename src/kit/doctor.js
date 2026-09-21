@@ -481,60 +481,37 @@ function checkKdComponentsVersion(projectRoot) {
 }
 
 /**
- * 检查 layout-header 组件是否注入了语言切换器（kd-select + @change="languageChange"）
+ * 检查固定模板路径的 layout-header 是否注入了语言切换器。
+ * layout-header 在不同项目中差异较大，缺失或结构不匹配时只提示 warn，不阻断主流程。
  * @param {string} projectRoot - 项目根路径
  * @returns {object} 检查结果
  */
 function checkLayoutHeaderLanguageSwitcher(projectRoot) {
-  const defaultPath = path.join(projectRoot, "src/layout/layout-header/index.vue");
-  let headerPath = defaultPath;
+  const headerRelative = "src/layout/layout-header/index.vue";
+  const headerPath = path.join(projectRoot, headerRelative);
 
   if (!fs.existsSync(headerPath)) {
-    // 搜索 src/layout/ 下含 right-box 的 .vue 文件
-    const layoutDir = path.join(projectRoot, "src/layout");
-    if (!fs.existsSync(layoutDir)) {
-      return createCheck("layout-header-language", "fail", "src/layout 目录不存在");
-    }
-    const found = findHeaderFile(layoutDir);
-    if (!found) {
-      return createCheck("layout-header-language", "fail", "未找到 layout-header 组件");
-    }
-    headerPath = found;
+    return createCheck(
+      "layout-header-language",
+      "warn",
+      `未找到模板路径 ${headerRelative}，已跳过 layout-header 语言切换器检查`,
+      {
+        suggestion: "如目标项目有不同头部结构，请按项目实际入口手动接入语言切换器",
+      },
+    );
   }
 
- const content = fs.readFileSync(headerPath, "utf8");
+  const content = fs.readFileSync(headerPath, "utf8");
   // i18nMixin 已全局引入，layout-header 无需单独声明；检查语言切换器和 @change="languageChange"
   const hasSwitcher = content.includes("activeLanguage");
   const hasLanguageChange = content.includes("languageChange");
 
   if (hasSwitcher && hasLanguageChange) {
     return createCheck("layout-header-language", "pass", "layout-header 已注入语言切换器");
- }
-  return createCheck("layout-header-language", "fail", "layout-header 缺少语言切换器或 @change=\"languageChange\"", {
-    suggestion: "执行 inject 注入 kd-select 语言切换器（@change=\"languageChange\"）",
- });
-}
-
-/**
- * 递归搜索 layout 目录下包含 right-box class 的 .vue 文件
- * @param {string} dir - 搜索目录
- * @returns {string|null} 文件路径或 null
- */
-function findHeaderFile(dir) {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const found = findHeaderFile(fullPath);
-      if (found) return found;
-    } else if (entry.name.endsWith(".vue")) {
-      const content = fs.readFileSync(fullPath, "utf8");
-      if (content.includes("right-box")) {
-        return fullPath;
-      }
-    }
   }
-  return null;
+  return createCheck("layout-header-language", "warn", "layout-header 缺少语言切换器或 @change=\"languageChange\"", {
+    suggestion: `仅当 ${headerRelative} 符合模板结构时执行 inject；否则按项目实际头部结构手动接入`,
+  });
 }
 
 /**
@@ -574,5 +551,6 @@ function checkElementuiUtils(projectRoot, bootstrapRules) {
 module.exports = {
   checkDependencies,
   checkKdComponentsVersion,
+  checkLayoutHeaderLanguageSwitcher,
   inspectProjectSetup,
 };

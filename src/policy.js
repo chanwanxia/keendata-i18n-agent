@@ -38,7 +38,6 @@ function decideNextAction(state) {
      "style-imports",
      "accept-language",
      "route-title",
-     "layout-header-language",
      "dependencies",
      "kd-components-version",
      "scripts",

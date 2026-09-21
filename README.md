@@ -258,6 +258,8 @@ kd-i18n init --write-config
 
 ```json
 {
+  "excludeDirs": ["src/assets", "src/build", "src/custom-assets"],
+  "excludeFiles": ["src/vendor/legacy.js"],
   "hardcodedChinese": {
     "ignoreFilePrefixes": ["src/languages/formatters/"],
     "ignorePatterns": ["from \"@/languages\""]
@@ -272,6 +274,8 @@ kd-i18n init --write-config
   }
 }
 ```
+
+默认会排除 `src/assets` 和 `src/build`，避免资源或构建脚本被自动包裹为 `t()`；如需排除更多业务目录或文件，可通过 `excludeDirs` / `excludeFiles` 追加配置。
 
 ### i18n-agent.config.json
 

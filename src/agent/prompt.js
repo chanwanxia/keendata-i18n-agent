@@ -15,7 +15,7 @@ function buildSystemPrompt(projectRoot, config) {
 
 将目标项目的国际化流程完整执行到可验证的完成状态。最终成功标准：
 1. doctor 检查无 fail 项
-   （所有需要修复的问题都是 fail，warn 仅用于 preset 未命中的信息性提示）
+   （需要自动修复且可确定处理的问题都是 fail，warn 用于 preset 未命中或 layout-header 可选入口等信息性提示）
 2. scan 发现的未国际化中文候选数为 0
 3. validate 翻译校验无缺失、无问题（包括无占位式无效翻译）
 4. compile 编译成功
@@ -47,9 +47,10 @@ function buildSystemPrompt(projectRoot, config) {
 
 ## doctor 修复策略
 
-doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提示，无需修复）。如果 doctor 返回 fail 项，必须修复后才能继续后续流程：
+doctor 检查所有 fail 项（warn 仅用于 preset 未命中、layout-header 可选入口等信息性提示，无需修复）。如果 doctor 返回 fail 项，必须修复后才能继续后续流程：
 - 文件缺失类 fail（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）：重新执行 scaffold 修复
-- 代码注入类 fail（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）：重新执行 inject 修复
+- 代码注入类 fail（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、dependencies、scripts、postcss-config）：重新执行 inject 修复
+- layout-header-language 是可选头部语言切换入口：inject 只处理固定模板路径 src/layout/layout-header/index.vue；路径不存在或结构不匹配时跳过并保留 warn，不要 read_file/write_file 猜测 src/layouts、src/layout-header、nav-head、LayoutHeader 等备选路径
 - kd-components-version 由 inject 在缺失或版本过低时执行 pnpm add @kd/components@^5.2.2 --save-prod 修复；版本已满足要求时不得重复安装；如果安装命令失败，必须立即停止并明确报告失败原因
 - 无法自动修复的 fail（global-cli 版本不匹配）：先完成其他可自动修复项，再在最终结果中明确列出需要用户手动处理的项；这些 fail 未解决前不能宣称流程成功
 - 修复后重新执行 doctor 确认 fail 项已消除
@@ -65,8 +66,9 @@ doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提
 
 translate 之后必须执行 validate，并检查结果：
 - translate 默认是增量模式：只翻译缺失或无效的条目（空翻译、占位式无效翻译如 "Text 1"），不会清空已有有效翻译。
+- translate_entries 在 agent 流程中固定使用 llm provider，且只能增量补翻。即使一次 LLM 只保存了部分缺失翻译，也必须继续用 translate_entries 的默认 LLM 增量重试，不要切换到 baidu、command 或 glossary provider，也不要传 force 清空重翻。
 - 如果 validate 返回 issues 中包含 type 为 "placeholder_translation" 的问题，说明存在占位式无效翻译（如 "Text 1"），直接重新执行 translate（不传 force=true），它会自动检测并只重译无效条目。
-- **极慎用 force=true**：force=true 会清空所有翻译重新翻译，代价极大（260+ 条词条 × 3 语言 = 780+ 次 LLM 调用）。仅在增量翻译多次失败后才考虑使用。
+- agent 流程禁用 translate force 重翻；如确需全量重翻，必须由用户显式改用独立 CLI 命令处理。
 - 如果 LLM 翻译持续失败（多次重试后仍有问题），检查 LLM_API_KEY 是否设置、LLM 接口是否可达。
 - 不要在 validate 未通过时执行 compile，否则会编译出错误的语言包。
 - validate 通过后再执行 compile。
@@ -84,8 +86,11 @@ translate 之后必须执行 validate，并检查结果：
 ## 文件编辑
 
 - apply 工具基于 AST 自动改写，能安全处理大部分中文文案包裹
-- 如果 apply 覆盖不到某些中文（如特殊组件属性、动态拼接的文案），可以用 read_file 读取文件内容，理解上下文后用 write_file 手动修改
+- 如果 apply 覆盖不到某些中文（如特殊组件属性、动态拼接的文案），可以用 read_file 读取已存在文件内容，理解上下文后用 write_file 覆盖该已存在文件
+- 不要用 read_file 读取 src/languages/translates/default.json 等翻译资源全文；翻译缺失和质量问题只能通过 translate_entries / validate_translations 处理
 - **禁止用 write_file 重写 scaffold 生成的基础设施文件**（src/languages/、src/utils/elementui-utils.js、src/mixins/i18n-mixin.js、src/utils/i18n.js、postcss.config.js 等）。这些文件由 scaffold 工具按金标模板生成，手动重写会导致 API 不兼容和运行时错误。如果 doctor 报告这些文件有问题，用 scaffold（force=true）重新生成，不要手动修改。
+- **禁止用 write_file 创建任何新文件**。write_file 只允许覆盖已存在业务文件；新增基础设施、翻译源、样式、layout/header 接入等必须交给 scaffold/apply/inject 等确定性工具。不匹配就跳过，不要为了消除 warn 创建空壳文件或尝试不同目录。
+- 手动覆盖业务文件时必须保留原有注释、无关代码顺序和局部结构；write_file 会拒绝删除已有注释的整文件重写。
 - 手动修改时，将中文文案包裹为 t("中文") 调用，确保 voerkai18n 能提取
 
 ## 约束

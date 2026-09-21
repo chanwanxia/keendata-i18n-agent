@@ -961,30 +961,24 @@ function injectAcceptLanguage(projectRoot, _options = {}) {
 }
 
 /**
- * 向 layout-header 组件注入语言切换器（kd-select）
- * i18nMixin 已在 main.js 全局引入，layout-header 无需单独导入 mixin 或声明 inject
- * 查找策略：优先 src/layout/layout-header/index.vue，否则搜索 src/layout/ 下含 right-box 的 .vue 文件
+ * 向固定模板路径的 layout-header 组件注入语言切换器（kd-select）。
+ * i18nMixin 已在 main.js 全局引入，layout-header 无需单独导入 mixin 或声明 inject。
+ * 只处理 preset 约定的 src/layout/layout-header/index.vue；不搜索备选路径，避免跨项目结构猜测写入。
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
  */
 function injectLayoutHeader(projectRoot, _options = {}) {
-  const defaultPath = path.join(projectRoot, "src/layout/layout-header/index.vue");
-  let headerPath = defaultPath;
-  let headerRelative = "src/layout/layout-header/index.vue";
+  const headerRelative = "src/layout/layout-header/index.vue";
+  const headerPath = path.join(projectRoot, headerRelative);
 
-  // 如果默认路径不存在，搜索 src/layout/ 下含 right-box 的 .vue 文件
   if (!fs.existsSync(headerPath)) {
-    const layoutDir = path.join(projectRoot, "src/layout");
-    if (!fs.existsSync(layoutDir)) {
-      return { updated: false, message: "src/layout 目录不存在" };
-    }
-    const found = findHeaderComponent(layoutDir);
-    if (!found) {
-      return { updated: false, message: "未找到 layout-header 组件" };
-    }
-    headerPath = found;
-    headerRelative = path.relative(projectRoot, found);
+    return {
+      updated: false,
+      skipped: true,
+      file: headerRelative,
+      message: `未找到模板路径 ${headerRelative}，已跳过 layout-header 注入`,
+    };
   }
 
   let content = fs.readFileSync(headerPath, "utf8");
@@ -1052,28 +1046,6 @@ function injectLayoutHeader(projectRoot, _options = {}) {
   }
 
   return { updated: false, message: "layout-header 无需修改", file: headerRelative };
-}
-
-/**
- * 在 layout 目录下递归搜索包含 right-box class 的 .vue 文件
- * @param {string} dir - 搜索目录
- * @returns {string|null} 文件路径或 null
- */
-function findHeaderComponent(dir) {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const found = findHeaderComponent(fullPath);
-      if (found) return found;
-    } else if (entry.name.endsWith(".vue")) {
-      const content = fs.readFileSync(fullPath, "utf8");
-      if (content.includes("right-box")) {
-        return fullPath;
-      }
-    }
-  }
-  return null;
 }
 
 /**

@@ -7,6 +7,8 @@ const { runShellCommandCaptured } = require("../kit/shell");
 const SCAN_CANDIDATE_LIMIT = 50;
 /** validate 问题列表截断阈值 */
 const VALIDATE_ISSUE_LIMIT = 30;
+/** read_file 返回内容截断阈值，避免大文件挤占 agent 上下文 */
+const READ_FILE_MAX_CHARS = 50000;
 
 /**
  * 构建 agent 工具集，通过闭包绑定 projectRoot 和 config
@@ -18,7 +20,8 @@ function createTools(projectRoot, config) {
   return [
     {
       name: "read_file",
-      description: "读取目标项目中指定相对路径的文件内容。返回文件全文字符串。",
+      description:
+        "读取目标项目中指定相对路径的已存在业务文件内容。翻译资源和超大文件不会返回全文，应使用专用工具处理。",
       parameters: {
         type: "object",
         properties: {
@@ -34,14 +37,31 @@ function createTools(projectRoot, config) {
         if (!fs.existsSync(filePath)) {
           return { error: `文件不存在: ${args.relativePath}` };
         }
+        if (isManagedTranslationResource(args.relativePath, config)) {
+          return {
+            relativePath: args.relativePath,
+            skipped: true,
+            reason:
+              "翻译资源由 translate_entries / validate_translations 专用工具管理，不读取全文",
+            content: "",
+          };
+        }
         const content = fs.readFileSync(filePath, "utf8");
+        if (content.length > READ_FILE_MAX_CHARS) {
+          return {
+            relativePath: args.relativePath,
+            content: content.slice(0, READ_FILE_MAX_CHARS),
+            truncated: true,
+            originalLength: content.length,
+          };
+        }
         return { relativePath: args.relativePath, content };
       },
     },
     {
       name: "write_file",
       description:
-        "写入或覆盖目标项目中指定相对路径的文件。如果目录不存在会自动创建。",
+        "覆盖目标项目中指定相对路径的文件。仅用于修改已存在的业务文件；不得用来创建 layout/header 备选接入文件。",
       parameters: {
         type: "object",
         properties: {
@@ -56,20 +76,34 @@ function createTools(projectRoot, config) {
         },
         required: ["relativePath", "content"],
       },
-     execute(args) {
-       const filePath = path.join(projectRoot, args.relativePath);
-       fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      execute(args) {
+        const filePath = path.join(projectRoot, args.relativePath);
+        if (!fs.existsSync(filePath)) {
+          const reason = isLayoutFallbackPath(args.relativePath)
+            ? "layout-header 注入只处理固定模板路径，不匹配时应跳过"
+            : "write_file 只允许覆盖已存在文件，新增文件应由 scaffold/apply/inject 等确定性工具生成";
+          return { error: `禁止创建文件: ${args.relativePath}。${reason}。` };
+        }
         // 还原 LLM 可能输出的 \uXXXX 转义序列为实际中文字符
         const content = kit.deescapeUnicode
           ? kit.deescapeUnicode(args.content)
           : args.content;
+        const commentCheck = validateWritePreservesComments(
+          fs.readFileSync(filePath, "utf8"),
+          content,
+        );
+        if (!commentCheck.ok) {
+          return {
+            error: `禁止写入: ${args.relativePath} 删除了已有注释。${commentCheck.message}`,
+          };
+        }
         fs.writeFileSync(filePath, content, "utf8");
-       return {
-         relativePath: args.relativePath,
-         written: true,
+        return {
+          relativePath: args.relativePath,
+          written: true,
           bytes: content.length,
-       };
-     },
+        };
+      },
     },
     {
       name: "list_files",
@@ -99,8 +133,8 @@ function createTools(projectRoot, config) {
       },
     },
     {
-    name: "scaffold",
-    description:
+      name: "scaffold",
+      description:
         "写入 i18n 基础设施文件（languages 目录、mixin、样式等）。返回创建和跳过的文件数。force=true 时覆盖已存在的文件（用于修复内容不完整的情况）。注意：default.json 包含提取的翻译数据，即使 force=true 也不会被覆盖。",
       parameters: {
         type: "object",
@@ -113,8 +147,10 @@ function createTools(projectRoot, config) {
       },
       execute(args) {
         const profile = kit.detectProjectProfile(projectRoot);
-       const report = kit.scaffold(projectRoot, profile, config, { force: Boolean(args.force) });
-       const cleanupReport = kit.cleanupI18n(projectRoot, config);
+        const report = kit.scaffold(projectRoot, profile, config, {
+          force: Boolean(args.force),
+        });
+        const cleanupReport = kit.cleanupI18n(projectRoot, config);
         return {
           ok: true,
           summary: report.summary,
@@ -123,22 +159,24 @@ function createTools(projectRoot, config) {
         };
       },
     },
-  {
-    name: "inject",
-    description:
-        "向 main.js / vue.config.js / App.vue / interceptors / layout-header 注入 i18n 代码。注入后自动执行 eslint --fix 修复格式。返回各文件注入状态。重复执行是幂等的：已注入的代码不会被重复注入。force=true 时强制重新注入（用于修复内容不完整的情况）。",
-     parameters: {
-       type: "object",
-       properties: {
-         force: {
-           type: "boolean",
-           description: "是否强制重新注入，用于 doctor 检测到问题时覆盖修复。默认 false。",
-         },
-       },
-     },
+    {
+      name: "inject",
+      description:
+        "向 main.js / vue.config.js / App.vue / interceptors 注入 i18n 代码；layout-header 只处理固定模板路径，不匹配则跳过。注入后自动执行 eslint --fix 修复格式。返回各文件注入状态。重复执行是幂等的：已注入的代码不会被重复注入。force=true 时强制重新注入（用于修复内容不完整的情况）。",
+      parameters: {
+        type: "object",
+        properties: {
+          force: {
+            type: "boolean",
+            description: "是否强制重新注入，用于 doctor 检测到问题时覆盖修复。默认 false。",
+          },
+        },
+      },
       execute(args) {
         const profile = kit.detectProjectProfile(projectRoot);
-        const report = kit.inject(projectRoot, profile, config, { force: Boolean(args.force) });
+        const report = kit.inject(projectRoot, profile, config, {
+          force: Boolean(args.force),
+        });
         const installResult = report.details.kdComponentsInstall || {};
         return {
           ok: report.ok,
@@ -173,11 +211,11 @@ function createTools(projectRoot, config) {
         };
       },
     },
-   {
-    name: "apply_i18n",
-    description:
+    {
+      name: "apply_i18n",
+      description:
         "对目标项目执行 i18n 自动改写：中文文案包裹为 t()、.meta.title 包裹、el-form label-width 转为 auto、isRtl 内联样式转换、src/components/svg-icon/index.vue 已有 computed.margin 的 RTL 适配。正式执行前自动清理历史遗留问题（嵌套 t()、重复 import、beforeRouteEnter/props 中的 this.t 误用）。即使 scan 结果为 0 也必须执行（label-width、isRtl 和 SVG 图标 margin 转换不依赖中文扫描）。基于 AST 定点修改，按原有缩进生成并保持幂等。写入后自动执行 eslint --fix。dryRun=true 时仅预览不清理。",
-    parameters: {
+      parameters: {
         type: "object",
         properties: {
           dryRun: {
@@ -197,9 +235,9 @@ function createTools(projectRoot, config) {
           totalChangedFiles: report.changedFiles.length,
         };
       },
-   },
+    },
     {
-    name: "extract_entries",
+      name: "extract_entries",
       description:
         "执行词条提取命令（voerkai18n extract）。捕获 stdout 和 stderr 返回。",
       parameters: { type: "object", properties: {} },
@@ -222,26 +260,12 @@ function createTools(projectRoot, config) {
     {
       name: "translate_entries",
       description:
-        "自动补齐翻译源文件中缺失或无效的翻译（增量模式，不破坏已有有效翻译）。provider 可选 glossary/llm/baidu/command。自动检测空翻译和占位式无效翻译（如 Text 1），只重新翻译这些条目。provider.ok=true 但返回 ok=false 时表示仍有缺失或质量问题，必须继续调用 validate_translations 并按报告增量重试；force=true 会清空所有翻译重新翻译，代价极大，极慎用。",
-      parameters: {
-        type: "object",
-        properties: {
-          provider: {
-            type: "string",
-            description:
-              "翻译 provider：glossary（术语表）、llm（大模型翻译）、baidu（百度翻译）、command（自定义命令）",
-          },
-          force: {
-            type: "boolean",
-            description:
-              "是否强制清空所有翻译重新翻译。代价极大（所有词条 × 所有语言），仅在增量翻译多次失败后使用。默认 false。",
-          },
-        },
-      },
-      async execute(args) {
+        "使用 LLM 自动补齐翻译源文件中缺失或无效的翻译（增量模式，不破坏已有有效翻译）。agent 流程固定使用 llm provider，不切换 baidu/command/glossary，也不允许 force 清空重翻。自动检测空翻译和占位式无效翻译（如 Text 1），只重新翻译这些条目。provider.ok=true 但返回 ok=false 时表示仍有缺失或质量问题，必须继续调用 validate_translations 并按报告增量重试。",
+      parameters: { type: "object", properties: {} },
+      async execute() {
         const report = await kit.translateTranslations(projectRoot, config, {
-          provider: args.provider,
-          force: Boolean(args.force),
+          provider: "llm",
+          force: false,
         });
         return {
           ok: report.ok,
@@ -318,6 +342,128 @@ function createTools(projectRoot, config) {
 }
 
 /**
+ * 校验 write_file 覆盖内容时没有删除已有注释，避免 agent 手工重写造成过度修改。
+ * @param {string} original - 原文件内容
+ * @param {string} next - 待写入内容
+ * @returns {{ ok: boolean, message: string }} 校验结果
+ */
+function validateWritePreservesComments(original, next) {
+  const missingComments = extractSourceComments(original).filter(
+    (comment) => !next.includes(comment),
+  );
+  if (missingComments.length === 0) {
+    return { ok: true, message: "" };
+  }
+  return {
+    ok: false,
+    message: `缺失注释: ${missingComments.slice(0, 3).join(" | ")}`,
+  };
+}
+
+/**
+ * 提取源码中需要原样保留的注释片段。
+ * @param {string} source - 源码内容
+ * @returns {string[]} 注释片段列表
+ */
+function extractSourceComments(source) {
+  const comments = [];
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (source.startsWith("<!--", i)) {
+      const end = source.indexOf("-->", i + 4);
+      if (end === -1) break;
+      comments.push(source.slice(i, end + 3).trim());
+      i = end + 2;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      const end = findLineEnd(source, i + 2);
+      comments.push(source.slice(i, end).trim());
+      i = end - 1;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      if (end === -1) break;
+      comments.push(source.slice(i, end + 2).trim());
+      i = end + 1;
+    }
+  }
+
+  return [...new Set(comments)];
+}
+
+/**
+ * 查找当前行结尾位置。
+ * @param {string} source - 源码内容
+ * @param {number} start - 起始查找位置
+ * @returns {number} 行尾索引
+ */
+function findLineEnd(source, start) {
+  const nextLf = source.indexOf("\n", start);
+  const nextCr = source.indexOf("\r", start);
+  if (nextLf === -1) return nextCr === -1 ? source.length : nextCr;
+  if (nextCr === -1) return nextLf;
+  return Math.min(nextLf, nextCr);
+}
+
+/**
+ * 判断 write_file 是否正在创建 layout/header 备选接入路径。
+ * @param {string} relativePath - 相对项目根目录的文件路径
+ * @returns {boolean} 是否属于 layout/header 备选路径
+ */
+function isLayoutFallbackPath(relativePath) {
+  const normalized = String(relativePath || "").replace(/\\/g, "/");
+  return (
+    /^src\/layouts?\//.test(normalized) ||
+    /^src\/layout-header\//.test(normalized)
+  );
+}
+
+/**
+ * 判断路径是否属于由翻译工具管理的资源文件。
+ * @param {string} relativePath - 相对项目根目录的文件路径
+ * @param {object} config - i18n-kit 配置
+ * @returns {boolean} 是否为翻译资源
+ */
+function isManagedTranslationResource(relativePath, config) {
+  const normalized = normalizeToolPath(relativePath);
+  const translationFile = normalizeToolPath(config && config.translationFile);
+  return (
+    normalized === translationFile ||
+    /^src\/languages\/translates\/[^/]+\.json$/.test(normalized)
+  );
+}
+
+/**
+ * 归一化工具入参路径，统一使用 POSIX 分隔符。
+ * @param {string} relativePath - 相对项目根目录的文件路径
+ * @returns {string} 归一化后的路径
+ */
+function normalizeToolPath(relativePath) {
+  return String(relativePath || "").replace(/\\/g, "/");
+}
+
+/**
  * 递归收集目录下的文件
  * @param {string} currentPath - 当前路径
  * @param {string} projectRoot - 项目根路径
@@ -326,6 +472,7 @@ function createTools(projectRoot, config) {
  */
 function collectFiles(currentPath, projectRoot, extension, files) {
   const stats = fs.statSync(currentPath);
+
   if (stats.isDirectory()) {
     const dirName = path.basename(currentPath);
     if (["node_modules", "dist", ".git", ".idea"].includes(dirName)) return;

@@ -213,9 +213,9 @@ module.exports = {
 
 ### 3.7 layout-header 语言切换器注入
 
-对 `src/layout/layout-header/index.vue`（或等价头部组件）执行注入：
+对 `src/layout/layout-header/index.vue` 执行注入：
 
-**查找策略**：优先 `src/layout/layout-header/index.vue`；如不存在，搜索 `src/layout/` 下含 `right-box` class 的 `.vue` 文件。
+**查找策略**：只处理 preset 约定的固定模板路径 `src/layout/layout-header/index.vue`。如果路径不存在，或目标项目头部结构不符合模板，直接跳过并在 doctor 中保留 warn；不搜索 `src/layouts`、`src/layout-header`、`nav-head`、`LayoutHeader` 等备选路径，也不创建空壳文件。
 
 **template 注入**：在 `<div class="right-box">` 内部注入语言切换器：
 ```html
@@ -225,17 +225,17 @@ module.exports = {
   label="title"
   val="name"
   width="160"
-  @change="changeLanguage"
+  @change="languageChange"
 ></kd-select>
 ```
 
 **script 注入**：
-- 注入 `import { i18nMixin } from "@/mixins/i18n-mixin"`
-- 组件 options 添加 `mixins: [i18nMixin()]`（已有 mixins 则追加）
+- 不注入单文件 `i18nMixin` import
+- 不添加 `mixins` / `inject` 声明
 
-`activeLanguage`、`languages`、`changeLanguage` 均由 `i18nMixin()` 的 computed/methods 提供，无需额外声明。
+`activeLanguage`、`languages`、`languageChange` 均由 main.js 全局 mixin 提供，无需额外声明。
 
-**幂等性**：已包含 `i18nMixin` 或 `activeLanguage` 则跳过。
+**幂等性**：已包含 `activeLanguage` 则跳过；历史单文件 `i18nMixin` / `inject: ["isRtl"]` 声明会被清理。
 
 ### 3.8 @kd/components 版本检查
 
@@ -552,7 +552,8 @@ init_config → create_translation_file → scaffold → inject → check_cli �
 - 如果 fail 项是 scaffold/inject 能修复的（bootstrap-main、webpack-loader、style-imports、rtl-mixin、rtl-style、width-adaptation、accept-language、component-locale、route-title），回到 scaffold 或 inject 重试一次
 - 修复策略按 fail 项类型分发：
   - 文件缺失类（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）：重试 scaffold（force=true 覆盖不完整文件）
-  - 代码注入类（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）：重试 inject（force=true 强制重新注入）
+  - 代码注入类（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、dependencies、scripts、postcss-config）：重试 inject（force=true 强制重新注入）
+  - 可选接入类（layout-header-language）：仅输出 warn，不参与自动修复重试
   - 无法自动修复类（kd-components-version 版本过低、global-cli 版本不匹配）：输出提示让用户手动处理
 - 用 `state.repairs.scaffoldRetried` / `injectRetried` 防止循环（各最多重试一次）
 - 其他 fail 项则 stop
@@ -586,16 +587,16 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 **文件**：`src/kit/doctor.js`
 
 - `checkMainBootstrap` 的 fail 降级为 warn（scaffold/inject 后才可能 pass）
-- **所有需要修复的检查项统一为 fail**（不再使用 warn），仅 `preset: none` 保留为 warn（信息性提示，不触发修复）
+- 需要修复且可确定处理的检查项为 fail；`preset: none` 与 layout-header 这类可选/项目差异入口保留为 warn（信息性提示，不触发修复）
 - 新增 `checkDependencies`：验证 package.json 包含 voerkai18n 依赖（`^2.1.13`）和 postcss-rtlcss
 - 新增 `checkScripts`：验证 package.json 包含 `i18n:extract` 和 `i18n:compile`
 - 新增 `checkGlobalCli`：验证全局 `voerkai18n` 版本为 `2.1.x`
 - 新增 `checkPostcssConfig`：验证 postcss.config.js 包含 postcss-rtlcss 配置
 - `checkDependencies` 扩展：增加 `@kd/components` 存在性检查（fail 级别）
 - 新增 `checkKdComponentsVersion`：验证 `@kd/components` 版本 >= 5.2.2（v5 起才有 `dist/locale/lang/*`），低于 5.2.2 则 fail
-- 新增 `checkLayoutHeaderLanguageSwitcher`：验证 layout-header 组件包含 `i18nMixin` 和语言切换器（`activeLanguage` 或 `changeLanguage`），缺失则 fail
+- 新增 `checkLayoutHeaderLanguageSwitcher`：验证固定模板路径的 layout-header 组件包含语言切换器（`activeLanguage` 与 `languageChange`），路径缺失或结构不匹配则 warn
 - 新增 `checkElementuiUtils`：验证 `src/utils/elementui-utils.js` 存在且包含 `@kd/components/dist/locale` import，缺失则 fail
-- doctor fail 项处理扩展：`kd-components-version`、`layout-header-language`、`elementui-utils` 加入可修复列表
+- doctor fail 项处理扩展：`kd-components-version`、`elementui-utils` 加入可修复列表；`layout-header-language` 只做非阻塞提示
 
 ---
 
@@ -636,9 +637,9 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 - App.vue：验证 i18nMixin 注入、document.title 逻辑
 - interceptors：验证 Accept-Language 注入
 - package.json：验证依赖和 scripts 注入
-- layout-header：验证 i18nMixin import、mixins 注入、kd-select 语言切换器注入
-- layout-header 幂等：已包含 i18nMixin 跳过
-- layout-header 搜索：默认路径不存在时搜索 `src/layout/` 下含 `right-box` 的文件
+- layout-header：验证固定模板路径下 kd-select 语言切换器注入
+- layout-header 幂等：已包含 `activeLanguage` 跳过
+- layout-header 跳过：默认路径不存在时不搜索备选路径、不创建空壳文件
 - @kd/components 版本检查：`^4.x`、`^5.2.1` 触发 fail，`^5.2.2` 和更高 `5.x` 通过，不存在触发 fail
 - main.js `new Vue({ i18n })` 保留：替换旧 vue-i18n 后 Vue 实例选项保留 i18n
 
@@ -676,7 +677,7 @@ agent 是 Node.js 进程，不受 LLM 上下文窗口限制：
 
 **`doctor.test.js`**（新增）：
 - checkKdComponentsVersion：v4、v5.2.1 → fail，v5.2.2 → pass，不存在 → fail
-- checkLayoutHeaderLanguageSwitcher：缺失 i18nMixin → fail，包含 → pass
+- checkLayoutHeaderLanguageSwitcher：固定路径缺失或缺少语言切换器 → warn，包含 → pass
 - checkElementuiUtils：缺失文件 → fail，缺少 KD locale import → fail
 - checkDependencies 扩展：缺少 @kd/components → fail
 
@@ -717,7 +718,7 @@ kd-i18n run --json
 - 代码修改后执行 `pnpm lint fix`
 - 新增方法必须补充功能注释
 - `@kd/components` 版本必须 `>= 5.2.2`，否则 elementui-utils.js 中的 KD 组件 locale 文件不可用；inject 只在缺失或版本过低时安装 `^5.2.2`
-- layout-header 文件路径默认 `src/layout/layout-header/index.vue`，如不存在则搜索 `src/layout/` 下含 `right-box` 的 `.vue` 文件
+- layout-header 文件路径固定为 `src/layout/layout-header/index.vue`，如不存在则跳过并在 doctor 中提示 warn
 - isRtl 内联样式转换仅处理对象语法 `:style="{ ... }"`，不处理字符串语法 `:style="'padding-right: 32px'"`（字符串语法在金标项目中未使用）
 - `.meta.title` 自动包裹仅匹配 template mustache 和 v-bind 表达式，不匹配 script 中的属性访问
 - `inject: ["isRtl"]` 自动注入仅在 apply 模块检测到 `isRtl` 引用时触发

@@ -199,3 +199,29 @@ test("工具返回 error 后 agent 中断且不继续写文件", async () => {
   assert.ok(result.timeline[0].result.includes("文件不存在"));
   assert.ok(!fs.existsSync(path.join(dir, "src/missing.js")));
 });
+
+test("write_file 禁止创建 layout-header 备选路径", async () => {
+  const dir = createTempProject({});
+  const tools = createTools(dir, CONFIG);
+
+  const client = createMockClient([
+    assistantResponse([
+      toolCall("c1", "write_file", {
+        relativePath: "src/layouts/index.vue",
+        content: "<template></template>\n",
+      }),
+    ]),
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    20,
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.timeline[0].result.includes("禁止创建文件"));
+  assert.ok(!fs.existsSync(path.join(dir, "src/layouts/index.vue")));
+});

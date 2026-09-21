@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { applyI18n } = require("../src/kit/apply");
+const { DEFAULT_CONFIG, loadProjectConfig } = require("../src/kit/config");
 
 /**
  * 创建临时项目并写入文件
@@ -27,7 +28,14 @@ function createTempProject(files = {}) {
 const CONFIG = {
   include: ["src"],
   extensions: [".js", ".vue"],
-  excludeDirs: ["node_modules", "dist", ".git", ".idea"],
+  excludeDirs: [
+    "node_modules",
+    "dist",
+    ".git",
+    ".idea",
+    "src/assets",
+    "src/build",
+  ],
   excludeFiles: [],
   languages: ["zh", "en", "jp", "ar"],
   apply: {
@@ -161,6 +169,87 @@ test("模板字面量转换为 t() 带占位符", () => {
     result.includes('this.t("你好{}"'),
     `应包含 this.t("你好{}"), 实际: ${result}`,
   );
+});
+
+test("模板字面量占位符外层双引号转换为单引号", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>export default { methods: { confirm(curIndex) { return \`请选择"实体\${curIndex + 1}"的主键\`; } } }</script>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(`this.t("请选择'实体{}'的主键", curIndex + 1)`),
+    `占位符外层引号应使用单引号，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes('\\"实体{}\\"'),
+    `不应保留转义双引号，实际: ${result}`,
+  );
+});
+
+test("简单 HTML 模板字面量只转换文本节点", () => {
+  const projectRoot = createTempProject({
+    "src/init-graph.js":
+      "const tooltip = { getContent() { return `<div>点击查看日志</div>`; } };",
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/init-graph.js"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes('`<div>${t("点击查看日志")}</div>`'),
+    `HTML 模板字面量应只替换文本节点，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes('t("<div>点击查看日志</div>")'),
+    `不应翻译 HTML 标签整体，实际: ${result}`,
+  );
+  assert.ok(result.includes('import { t } from "@/languages"'));
+});
+
+test("默认配置排除 src/assets 和 src/build", () => {
+  const projectRoot = createTempProject({
+    "src/app.js": `const title = "首页";`,
+    "src/assets/icon.js": `const title = "危险资源";`,
+    "src/build/tool.js": `const title = "构建脚本";`,
+  });
+
+  applyI18n(projectRoot, DEFAULT_CONFIG, { dryRun: false });
+
+  const app = fs.readFileSync(path.join(projectRoot, "src/app.js"), "utf8");
+  const asset = fs.readFileSync(
+    path.join(projectRoot, "src/assets/icon.js"),
+    "utf8",
+  );
+  const build = fs.readFileSync(
+    path.join(projectRoot, "src/build/tool.js"),
+    "utf8",
+  );
+  assert.ok(app.includes('t("首页")'), `普通源码应处理，实际: ${app}`);
+  assert.ok(asset.includes('"危险资源"'), `src/assets 不应处理，实际: ${asset}`);
+  assert.ok(build.includes('"构建脚本"'), `src/build 不应处理，实际: ${build}`);
+});
+
+test("项目配置追加 excludeDirs 时保留默认危险目录排除", () => {
+  const projectRoot = createTempProject({
+    "i18n-kit.config.json": JSON.stringify({
+      excludeDirs: ["src/custom-assets"],
+    }),
+  });
+
+  const config = loadProjectConfig(projectRoot);
+
+  assert.ok(config.excludeDirs.includes("src/assets"));
+  assert.ok(config.excludeDirs.includes("src/build"));
+  assert.ok(config.excludeDirs.includes("src/custom-assets"));
 });
 
 test("已包裹的 t() 不被重复转换", () => {
@@ -934,6 +1023,36 @@ test("HTML 注释原样保留不被清除", () => {
   assert.ok(result.includes("<!-- 这是注释 -->"), "HTML 注释应原样保留");
 });
 
+test("script 方法前行注释原样保留不被清除", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div></div></template><script>
+export default {
+  methods: {
+    // 上线/下线的popConfig
+    linePopConfig(row, operate) {
+      const title = operate === "UP" ? "上线" : "下线";
+      return {
+        title,
+        content: \`此操作将\${title}\${row.experimentName}实验的调度，是否继续？\`,
+        confirmText: "确认",
+      };
+    },
+
+    // 上线/下线
+    toLineSchedule(row, operate) {
+      return row;
+    },
+  },
+};
+</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("// 上线/下线的popConfig"), `方法前注释应保留，实际: ${result}`);
+  assert.ok(result.includes("// 上线/下线"), `后续方法前注释应保留，实际: ${result}`);
+  assert.ok(result.includes('confirmText: this.t("确认")'), `业务文案仍应转换，实际: ${result}`);
+});
+
 test("含中文的 HTML 注释保留且不翻译", () => {
   const projectRoot = createTempProject({
     "src/test.vue": `<template><!-- <kd-column-text p-l="failureCount,失败数量"></kd-column-text> --><div>实际内容</div></template>`,
@@ -1117,6 +1236,28 @@ test("包装跨行正则纯文本时转义换行并保留反斜杠", () => {
   );
 });
 
+test("包装普通模板文案时折行缩进归一为单个空格", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><p>LR：逻辑分类（Logistic Classification）是一种线性模型，可以表示为 y = w * x +
+        b，其中 w 是权重参数。</p></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+
+  assert.ok(
+    result.includes(
+      't("LR：逻辑分类（Logistic Classification）是一种线性模型，可以表示为 y = w * x + b，其中 w 是权重参数。")',
+    ),
+    `普通文案折行应归一为空格，实际: ${result}`,
+  );
+  assert.strictEqual(
+    /\\n\s*b，/.test(result),
+    false,
+    `普通文案中不应残留换行转义和缩进，实际: ${result}`,
+  );
+});
+
 test("cleanup 修复历史 t() 文本中的真实换行", () => {
   const projectRoot = createTempProject({
     "src/test.vue": String.raw`<template><p>{{ t("第一行：^\\d+$ 或
@@ -1137,6 +1278,25 @@ test("cleanup 修复历史 t() 文本中的真实换行", () => {
   );
 });
 
+test("cleanup 修复历史普通 t() 文案中的换行转义和缩进", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": String.raw`<template><p>{{ t("LR：逻辑分类是一种线性模型，y = w * x +\n        b，其中 w 是权重参数。") }}</p></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+
+  assert.ok(
+    result.includes('t("LR：逻辑分类是一种线性模型，y = w * x + b，其中 w 是权重参数。")'),
+    `历史普通 t() 文案应归一折行空白，实际: ${result}`,
+  );
+  assert.strictEqual(
+    /\\n\s*b，/.test(result),
+    false,
+    `历史普通 t() 文案中不应残留换行转义和缩进，实际: ${result}`,
+  );
+});
+
 test("cleanup 保留 RegExp 构造函数字符串中的 Unicode 范围", () => {
   const projectRoot = createTempProject({
     "src/test.js": String.raw`const title = displayNameLabel('\u4e2d\u6587\u540d');
@@ -1149,6 +1309,28 @@ const sReg = new RegExp("^[^\u4e00-\u9fa5 ]*$");`,
     result.includes(String.raw`new RegExp("^[^\u4e00-\u9fa5 ]*$")`),
     `RegExp 构造函数字符串中的 Unicode 范围应保留，实际: ${result}`,
   );
+});
+
+test("cleanup 保留 iconfont 私有区 Unicode 转义", () => {
+  const projectRoot = createTempProject({
+    "src/draw-fun.js": String.raw`function imgTo(className) {
+  switch (className) {
+    case "source_target":
+      return "\ue725";
+    default:
+      return "\ue727";
+  }
+}
+const title = displayNameLabel('\u4e2d\u6587\u540d\uff1a');`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/draw-fun.js"),
+    "utf8",
+  );
+  assert.ok(result.includes(String.raw`return "\ue725";`), `iconfont 私有区不应反解码，实际: ${result}`);
+  assert.ok(result.includes(String.raw`return "\ue727";`), `iconfont 私有区不应反解码，实际: ${result}`);
+  assert.ok(result.includes("displayNameLabel('中文名：')"), `普通中文 Unicode 仍应还原，实际: ${result}`);
 });
 
 test("cleanup 展开嵌套 displayNameLabel 调用", () => {

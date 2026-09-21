@@ -7,6 +7,7 @@ const {
   injectPackageJson,
   inject,
   injectAcceptLanguage,
+  injectLayoutHeader,
   installKdComponents,
   KD_COMPONENTS_INSTALL_SPEC,
   KD_COMPONENTS_VERSION_RANGE,
@@ -340,4 +341,52 @@ test("vue.config.js 多次 force 注入保持干净", () => {
   const openBraces = (content.match(/{/g) || []).length;
   const closeBraces = (content.match(/}/g) || []).length;
   assert.strictEqual(openBraces, closeBraces, "大括号应平衡");
+});
+
+test("layout-header 注入只处理固定模板路径，不搜索备选头部组件", () => {
+  const projectRoot = createTempProject({
+    "src/layout/nav-head/index.vue": `<template>
+  <div class="right-box">
+    <span>用户</span>
+  </div>
+</template>
+`,
+  });
+
+  const result = injectLayoutHeader(projectRoot);
+  const navHead = fs.readFileSync(
+    path.join(projectRoot, "src/layout/nav-head/index.vue"),
+    "utf8",
+  );
+
+  assert.strictEqual(result.updated, false);
+  assert.strictEqual(result.skipped, true);
+  assert.match(result.message, /已跳过 layout-header 注入/);
+  assert.doesNotMatch(navHead, /activeLanguage/);
+  assert.ok(
+    !fs.existsSync(
+      path.join(projectRoot, "src/layout/layout-header/index.vue"),
+    ),
+  );
+});
+
+test("layout-header 固定模板路径存在时按原模板注入语言切换器", () => {
+  const projectRoot = createTempProject({
+    "src/layout/layout-header/index.vue": `<template>
+  <div class="right-box">
+    <span>用户</span>
+  </div>
+</template>
+`,
+  });
+
+  const result = injectLayoutHeader(projectRoot);
+  const content = fs.readFileSync(
+    path.join(projectRoot, "src/layout/layout-header/index.vue"),
+    "utf8",
+  );
+
+  assert.strictEqual(result.updated, true);
+  assert.match(content, /:value="activeLanguage"/);
+  assert.match(content, /@change="languageChange"/);
 });

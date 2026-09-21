@@ -26,7 +26,8 @@ function walk(currentPath, projectRoot, config, files) {
   const stats = fs.statSync(currentPath);
   if (stats.isDirectory()) {
     const dirName = path.basename(currentPath);
-    if (config.excludeDirs.includes(dirName)) return;
+    const relativePath = toRelative(projectRoot, currentPath);
+    if (isExcludedDirectory(dirName, relativePath, config.excludeDirs)) return;
 
     fs.readdirSync(currentPath).forEach((name) => {
       walk(path.join(currentPath, name), projectRoot, config, files);
@@ -38,6 +39,22 @@ function walk(currentPath, projectRoot, config, files) {
   if (config.excludeFiles.includes(relativePath)) return;
   if (!config.extensions.includes(path.extname(currentPath))) return;
   files.push(currentPath);
+}
+
+/**
+ * 判断目录是否命中排除规则；兼容目录名（dist）和相对路径前缀（src/assets）。
+ * @param {string} dirName - 当前目录名
+ * @param {string} relativePath - 当前目录相对项目根路径
+ * @param {string[]} excludeDirs - 排除目录配置
+ * @returns {boolean} 是否排除该目录
+ */
+function isExcludedDirectory(dirName, relativePath, excludeDirs = []) {
+  return excludeDirs.some((entry) => {
+    const normalized = String(entry || "").replace(/\\/g, "/").replace(/\/+$/g, "");
+    if (!normalized) return false;
+    if (!normalized.includes("/")) return dirName === normalized;
+    return relativePath === normalized || relativePath.startsWith(`${normalized}/`);
+  });
 }
 
 /**
