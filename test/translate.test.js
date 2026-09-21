@@ -475,6 +475,7 @@ test("fixIdMapKeys 混合场景：未加引号 + 带空格 + 正常 key", () => 
 // ===== ensurePrettierIgnore 测试 =====
 
 const { ensurePrettierIgnore } = require("../src/kit/validate");
+const { repairPrettierConfig } = require("../src/kit/prettier");
 
 function createIgnoreProject(generatedFiles) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i18n-prettier-"));
@@ -512,4 +513,33 @@ test("ensurePrettierIgnore 追加到已有 .prettierignore", () => {
   assert.ok(result.updated, "应报告已更新");
   assert.ok(content.includes("node_modules"), "应保留原有内容");
   assert.ok(content.includes("src/languages/idMap.js"), "应追加 idMap.js");
+});
+
+test("repairPrettierConfig 修复非法 rangeEnd 和弃用选项", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i18n-prettier-config-"));
+  fs.writeFileSync(
+    path.join(dir, ".prettierrc.js"),
+    `module.exports = {
+  jsxBracketSameLine: false,
+  rangeStart: 0,
+  rangeEnd: null,
+};
+`,
+    "utf8",
+  );
+
+  const result = repairPrettierConfig(dir);
+  const content = fs.readFileSync(path.join(dir, ".prettierrc.js"), "utf8");
+
+  assert.deepStrictEqual(result, {
+    updated: true,
+    files: [".prettierrc.js"],
+  });
+  assert.match(content, /bracketSameLine: false/);
+  assert.doesNotMatch(content, /jsxBracketSameLine/);
+  assert.doesNotMatch(content, /rangeEnd/);
+  assert.deepStrictEqual(repairPrettierConfig(dir), {
+    updated: false,
+    files: [],
+  });
 });

@@ -430,7 +430,7 @@ function transformSvgIconMargin(source, relativePath) {
  * @returns {object} 变换结果
  */
 function transformTemplate(source, preset, config) {
-  let code = source;
+  let code = normalizeMultilineTranslateCalls(source);
   let replacements = 0;
 
   // 临时遮蔽 HTML 注释，避免注释中的中文被误处理，变换完成后原样恢复
@@ -595,6 +595,77 @@ function transformTemplate(source, preset, config) {
     replacements,
     code: finalCode,
   };
+}
+
+/**
+ * 将 t() 首个字符串参数中的真实换行转换为源码转义，修复历史运行产物
+ * @param {string} source - 源码或 template 内容
+ * @returns {string} 规范化后的源码
+ */
+function normalizeMultilineTranslateCalls(source) {
+  const translateCallPattern = /(?:this\.|\$)?\bt\s*\(\s*(['"])/g;
+  const patches = [];
+  let match;
+
+  while ((match = translateCallPattern.exec(source)) !== null) {
+    const quoteIndex = match.index + match[0].length - 1;
+    const quote = match[1];
+    let index = quoteIndex + 1;
+    let escaped = false;
+    let normalizedText = "";
+    let closingQuoteIndex = -1;
+
+    while (index < source.length) {
+      const char = source[index];
+      if (escaped) {
+        normalizedText += char;
+        escaped = false;
+        index += 1;
+        continue;
+      }
+      if (char === "\\") {
+        normalizedText += char;
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (char === quote) {
+        closingQuoteIndex = index;
+        break;
+      }
+      if (char === "\r") {
+        normalizedText += "\\r";
+        if (source[index + 1] === "\n") index += 1;
+      } else if (char === "\n") {
+        normalizedText += "\\n";
+      } else {
+        normalizedText += char;
+      }
+      index += 1;
+    }
+
+    if (closingQuoteIndex === -1) continue;
+
+    const originalText = source.slice(quoteIndex + 1, closingQuoteIndex);
+    if (originalText === normalizedText) {
+      translateCallPattern.lastIndex = closingQuoteIndex + 1;
+      continue;
+    }
+
+    patches.push({
+      start: quoteIndex + 1,
+      end: closingQuoteIndex,
+      code: normalizedText,
+    });
+    translateCallPattern.lastIndex = closingQuoteIndex + 1;
+  }
+
+  let result = source;
+  patches.reverse().forEach((patch) => {
+    result =
+      result.slice(0, patch.start) + patch.code + result.slice(patch.end);
+  });
+  return result;
 }
 
 /**
@@ -906,7 +977,12 @@ function deescapeUnicode(code) {
     const char = code[i];
     const next = code[i + 1];
 
-    if (!inRegex && !preserveUnicodeInQuote && canDecodeUnicodeEscape(code, i)) {
+    if (
+      quote &&
+      !inRegex &&
+      !preserveUnicodeInQuote &&
+      canDecodeUnicodeEscape(code, i)
+    ) {
       result += String.fromCharCode(parseInt(code.slice(i + 2, i + 6), 16));
       i += 5;
       escaped = false;
@@ -2429,7 +2505,11 @@ function splitTopLevelArguments(source) {
  * @returns {string} 转义后的文本
  */
 function escapeForDoubleQuote(text) {
-  return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
 }
 
 /**
@@ -2438,7 +2518,11 @@ function escapeForDoubleQuote(text) {
  * @returns {string} 转义后的文本
  */
 function escapeForSingleQuote(text) {
-  return text.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
 }
 
 /**
@@ -2525,6 +2609,10 @@ function cleanupI18n(projectRoot, config) {
     const beforeDeescape = code;
     code = deescapeUnicode(code);
     if (code !== beforeDeescape) fixCount += 1;
+
+    const beforeTranslateCleanup = code;
+    code = normalizeMultilineTranslateCalls(code);
+    if (code !== beforeTranslateCleanup) fixCount += 1;
 
     const beforeDisplayNameCleanup = code;
     code = unwrapDisplayNameChineseFieldTranslate(

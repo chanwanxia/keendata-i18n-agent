@@ -125,7 +125,7 @@ module.exports = {
 
 版本号严格锁定 `^2.1.13`（voerkai18n 系列）和金标版本（postcss 系列）。
 
-写回 `package.json`，保留原有缩进。依赖写入后自动执行 `pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod`，确保每次 inject 都安装最新的 `5.x` 版本。
+写回 `package.json`，保留原有缩进。仅在缺失或版本低于 `5.2.2` 时执行 `pnpm add @kd/components@^5.2.2 --save-prod`，已有满足要求的版本不重复安装。
 
 ### 3.2 全局 CLI 版本检查
 
@@ -197,14 +197,19 @@ module.exports = {
 
 ### 3.6 Accept-Language 注入
 
-- 搜索 `src/utils/` 下含 `interceptors.request.use` 的文件
-- 在请求拦截器函数体中注入：
+- 搜索 `src/utils/` 下含 `config.headers["menuKey"]` 的源文件
+- 在 `config.headers["menuKey"]` 前直接注入：
   ```js
-  const languageMap = { zh: "zh-CN", en: "en-US", jp: "ja-JP", ar: "ar" };
+  const languageMap = {
+    zh: "zh-CN",
+    en: "en-US",
+    jp: "ja-JP",
+    ar: "ar",
+  };
   config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];
   config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";
   ```
-- 已有 `Accept-Language` 则跳过
+- 请求拦截器中由历史逻辑重复注入的 `config.headers` 初始化、languageMap 和 Accept-Language 会被清理，保留 `requestSuccessInterceptor(config)` 调用；其他非请求拦截器文件中的非标准 header 写法不做推断或改写
 
 ### 3.7 layout-header 语言切换器注入
 
@@ -234,10 +239,11 @@ module.exports = {
 
 ### 3.8 @kd/components 版本检查
 
-在 `injectPackageJson` 后检查并刷新 `@kd/components`：
+在注入前检查 `@kd/components`：
 - 读取 `package.json` 的 `dependencies["@kd/components"]`
 - 统一写入 `^5.2.2`，若旧依赖在 `devDependencies` 则迁移到 `dependencies`
-- 执行 `pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod`
+- 缺失或版本低于 `5.2.2` 时执行 `pnpm add @kd/components@^5.2.2 --save-prod`
+- 已满足最低版本时跳过安装，不刷新 lockfile 或实际安装版本
 - 若版本 `< 5.2.2`（如 `^4.x` 或 `^5.2.1`），doctor 输出 fail：`@kd/components 版本过低，国际化 locale 文件需要 v5.2.2+`
 - 若安装命令失败，inject 立即返回失败，不继续修改其他源码文件
 
@@ -412,7 +418,7 @@ apply 模块自动执行以下时区相关代码变换，确保时间处理与�
 
 **Mixin 方法**：`tzDateNow()`、`tzNewDate()`、`$i18nNow()` 由 `@kd/components` 组件库提供，无需在项目中额外定义。
 
-**请求头注入**：请求拦截器中已注入 `config.headers["X-Timezone"] = localStorage.getItem("i18n-tz")`，将用户时区传递给后端。
+**请求头注入**：请求拦截器中已注入 languageMap、`Accept-Language`、`X-Timezone` 和 `menuKey`，将语言、时区和菜单上下文传递给后端。
 
 ### 4.12 "中文名称"接入（displayName）
 
@@ -704,13 +710,13 @@ kd-i18n run --json
 
 - 目标项目与 gaea-fe-new 同框架：Vue2 + element-ui + @kd/components + vue-cli
 - `@voerkai18n/cli` 全局安装版本必须为 `2.1.13`（v3 不兼容）
-- inject 会自动执行 `pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod`，刷新到最新 `5.x`
+- inject 仅在 `@kd/components` 缺失或版本低于 `5.2.2` 时执行 `pnpm add @kd/components@^5.2.2 --save-prod`
 - 全局 CLI 需用户手动安装：`pnpm add -g @voerkai18n/cli@2.1.13`
 - LLM 翻译默认 `gpt-5.5`，可通过 `LLM_MODEL` 覆盖
 - `LLM_API_KEY` 未设置时 translate 回退 glossary 并警告
 - 代码修改后执行 `pnpm lint fix`
 - 新增方法必须补充功能注释
-- `@kd/components` 版本必须 `>= 5.2.2`，否则 elementui-utils.js 中的 KD 组件 locale 文件不可用；inject 会自动安装 `^5.2.2` 范围内最新的 `5.x`
+- `@kd/components` 版本必须 `>= 5.2.2`，否则 elementui-utils.js 中的 KD 组件 locale 文件不可用；inject 只在缺失或版本过低时安装 `^5.2.2`
 - layout-header 文件路径默认 `src/layout/layout-header/index.vue`，如不存在则搜索 `src/layout/` 下含 `right-box` 的 `.vue` 文件
 - isRtl 内联样式转换仅处理对象语法 `:style="{ ... }"`，不处理字符串语法 `:style="'padding-right: 32px'"`（字符串语法在金标项目中未使用）
 - `.meta.title` 自动包裹仅匹配 template mustache 和 v-bind 表达式，不匹配 script 中的属性访问

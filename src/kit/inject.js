@@ -56,27 +56,25 @@ const REQUIRED_DEPS = {
  * @returns {object} 注入报告
  */
 function inject(projectRoot, profile, config, options = {}) {
-  const packageJson = injectPackageJson(projectRoot, options);
   const kdComponentsInstall = installKdComponents(projectRoot, options);
 
   if (!kdComponentsInstall.ok) {
-    const kdComponentsVersion = checkKdComponentsVersion(projectRoot);
     return {
       ok: false,
       summary: {
-        packageJsonUpdated: packageJson.updated,
+        packageJsonUpdated: false,
         kdComponentsInstalled: false,
         mainJsUpdated: false,
         vueConfigUpdated: false,
         appVueUpdated: false,
         interceptorsUpdated: false,
         layoutHeaderUpdated: false,
-        kdComponentsWarning: kdComponentsVersion || null,
+        kdComponentsWarning: kdComponentsInstall.versionCheck || null,
       },
       details: {
-        packageJson,
+        packageJson: { updated: false, message: "依赖安装失败，已跳过" },
         kdComponentsInstall,
-        kdComponentsVersion,
+        kdComponentsVersion: kdComponentsInstall.versionCheck || null,
         mainJs: { updated: false, message: "依赖安装失败，已跳过" },
         vueConfig: { updated: false, message: "依赖安装失败，已跳过" },
         appVue: { updated: false, message: "依赖安装失败，已跳过" },
@@ -86,6 +84,7 @@ function inject(projectRoot, profile, config, options = {}) {
     };
   }
 
+  const packageJson = injectPackageJson(projectRoot, options);
   const results = {
     packageJson,
     kdComponentsInstall,
@@ -94,7 +93,7 @@ function inject(projectRoot, profile, config, options = {}) {
     appVue: injectAppVue(projectRoot, options),
     interceptors: injectAcceptLanguage(projectRoot, options),
     layoutHeader: injectLayoutHeader(projectRoot, options),
-    kdComponentsVersion: checkKdComponentsVersion(projectRoot),
+    kdComponentsVersion: kdComponentsInstall.versionCheck || null,
   };
 
   // 对被修改的文件统一执行 eslint --fix，修复注入引入的格式问题
@@ -103,13 +102,17 @@ function inject(projectRoot, profile, config, options = {}) {
   if (results.mainJs.updated) modifiedFiles.push("src/main.js");
   if (results.appVue.updated) modifiedFiles.push("src/App.vue");
   if (results.vueConfig.updated) modifiedFiles.push("vue.config.js");
- if (results.interceptors.updated && results.interceptors.file) {
-   modifiedFiles.push(results.interceptors.file);
- }
- if (results.layoutHeader.updated && results.layoutHeader.file) {
-   modifiedFiles.push(results.layoutHeader.file);
- }
- if (modifiedFiles.length > 0) {
+  if (results.interceptors.updated) {
+    modifiedFiles.push(
+      ...(results.interceptors.files || [results.interceptors.file]).filter(
+        Boolean,
+      ),
+    );
+  }
+  if (results.layoutHeader.updated && results.layoutHeader.file) {
+    modifiedFiles.push(results.layoutHeader.file);
+  }
+  if (modifiedFiles.length > 0) {
     runEslintFix(projectRoot, modifiedFiles);
   }
 
@@ -243,7 +246,7 @@ function injectPackageJson(projectRoot, options = {}) {
 }
 
 /**
- * 每次注入时安装满足最低版本要求的最新 @kd/components 5.x 版本
+ * 仅在缺失或版本过低时安装 @kd/components
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - shell 执行选项
  * @returns {object} 安装结果
@@ -258,25 +261,40 @@ function installKdComponents(projectRoot, options = {}) {
     };
   }
 
-  const command = `pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod && pnpm update @kd/components --prod`;
+  const versionCheck = checkKdComponentsVersion(projectRoot);
+  if (versionCheck && versionCheck.ok) {
+    return {
+      ok: true,
+      skipped: true,
+      command: null,
+      versionCheck,
+      message: "@kd/components 版本已满足要求，无需重复安装",
+    };
+  }
+
+  const command = `pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod`;
   const status = runShellCommand(
     command,
     projectRoot,
-    "更新 @kd/components 到最新 5.x 版本",
+    "安装 @kd/components",
     options,
   );
   if (status !== 0) {
     return {
       ok: false,
       command,
-      message: `更新 @kd/components 失败，请检查 pnpm、网络和仓库权限: ${command}`,
+      versionCheck,
+      message: `安装 @kd/components 失败，请检查 pnpm、网络和仓库权限: ${command}`,
     };
   }
 
+  const installedVersionCheck = checkKdComponentsVersion(projectRoot);
   return {
     ok: true,
+    skipped: false,
     command,
-    message: `已安装 @kd/components ${KD_COMPONENTS_VERSION_RANGE} 范围内的最新 5.x 版本`,
+    versionCheck: installedVersionCheck,
+    message: `已安装 @kd/components ${KD_COMPONENTS_VERSION_RANGE}`,
   };
 }
 
@@ -828,30 +846,45 @@ function replaceRouteWatch(content, _projectRoot) {
 
   // oldWatch = content.substring(routeStart, endIdx);
   return content.substring(0, routeStart - indent.length) + indentedWatch + content.substring(endIdx);
+}
 
-  // 如果没有 $route watch，在 watch: { 后注入
-  if (content.includes("watch:")) {
-    return content.replace(/(watch:\s*\{)/, "$1\n" + indentedWatch);
+/**
+ * 清理请求拦截器中已由权威 header 配置覆盖的历史语言注入
+ * @param {string} content - 请求工具源码
+ * @returns {string} 清理后的源码
+ */
+function removeDuplicateRequestHeaderInjection(content) {
+  if (
+    !content.includes("instance.interceptors.request.use") ||
+    !content.includes("requestSuccessInterceptor(config)")
+  ) {
+    return content;
   }
 
-  return null;
+  const legacyHeaderPatterns = [
+    /^([ \t]*)config\.headers = config\.headers \|\| \{\};\r?\n\1const languageMap = \{\r?\n\1  zh: "zh-CN",\r?\n\1  en: "en-US",\r?\n\1  jp: "ja-JP",\r?\n\1  ar: "ar",\r?\n\1\};\r?\n\1config\.headers\["Accept-Language"\] = languageMap\[localStorage\.getItem\("language"\) \|\| "zh"\];\r?\n?/gm,
+    /^([ \t]*)config\.headers = config\.headers \|\| \{\};\r?\n\1config\.headers\["Accept-Language"\] = localStorage\.getItem\("language"\) \|\| "zh";\r?\n?/gm,
+  ];
+
+  let cleaned = content;
+  legacyHeaderPatterns.forEach((pattern) => {
+    cleaned = cleaned.replace(pattern, "");
+  });
+
+  // 完整标准块被前面的清理逻辑移除后，顺带删除只剩下的空 header 判断。
+  cleaned = cleaned.replace(
+    /^([ \t]*)config\.headers = config\.headers \|\| \{\};\r?\n\1(?=return requestSuccessInterceptor\(config\))/gm,
+    "",
+  );
+  return cleaned.replace(/\n{3,}/g, "\n\n");
 }
 
 /**
  * 在请求拦截器中注入 Accept-Language 和 X-Timezone header
- * @param {string} projectRoot - 目标项目根路径
- * @param {object} options - 选项 { force: boolean }
- * @returns {object} 注入结果
- */
-/**
- * 在请求拦截器中注入 Accept-Language 和 X-Timezone header
  * 注入逻辑：
- * 1. 优先处理含 config.headers["menuKey"] 的文件（header 配置的权威位置）
- *    - 若已有完整的 languageMap + X-Timezone 注入：跳过
- *    - 若有旧的 Accept-Language（无 languageMap 或无 X-Timezone）：原地替换升级
- *    - 若无 Accept-Language：在 menuKey 前注入
- * 2. 回退到含 interceptors.request.use 的文件：仅当没有 menuKey 文件时才处理
- * 3. 整个 src/utils/ 只注入一个文件，避免重复
+ * 1. 只处理含 config.headers["menuKey"] 的源文件
+ * 2. 将标准 languageMap 和三个 header 直接写在 menuKey 前
+ * 3. 清理请求拦截器中已被 menuKey 文件覆盖的历史重复注入
  * @param {string} projectRoot - 目标项目根路径
  * @param {object} options - 选项 { force: boolean }
  * @returns {object} 注入结果
@@ -863,205 +896,68 @@ function injectAcceptLanguage(projectRoot, _options = {}) {
   }
 
   const files = fs.readdirSync(utilsDir).filter((f) => f.endsWith(".js"));
+  const menuKeyFile = files.find((file) => {
+    const filePath = path.join(utilsDir, file);
+    return fs
+      .readFileSync(filePath, "utf8")
+      .includes('config.headers["menuKey"]');
+  });
+  if (!menuKeyFile) {
+    return { updated: false, message: '未找到 config.headers["menuKey"]' };
+  }
 
-  /** 待注入的 header 设置语句（不含缩进，缩进由上下文动态确定） */
   const headerLines = [
-    'const languageMap = {',
+    "const languageMap = {",
     '  zh: "zh-CN",',
     '  en: "en-US",',
     '  jp: "ja-JP",',
     '  ar: "ar",',
-    '};',
+    "};",
     'config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];',
     'config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";',
   ];
+  const generatedHeaderPattern =
+    /^[ \t]*const languageMap = \{\r?\n[ \t]+zh: "zh-CN",[ \t]*\r?\n[ \t]+en: "en-US",[ \t]*\r?\n[ \t]+jp: "ja-JP",[ \t]*\r?\n[ \t]+ar: "ar",[ \t]*\r?\n[ \t]*\};[ \t]*\r?\n[ \t]*config\.headers\["Accept-Language"\] = languageMap\[localStorage\.getItem\("language"\) \|\| "zh"\];[ \t]*\r?\n[ \t]*config\.headers\["X-Timezone"\] = localStorage\.getItem\("i18n-tz"\) \|\| "";[ \t]*\r?\n?/gm;
+  const changedFiles = [];
 
-  /**
-   * 判断文件是否已包含完整的 header 注入（languageMap + Accept-Language + X-Timezone）
-   * @param {string} content - 文件内容
-   * @returns {boolean} 是否已完整注入
-   */
-  function isFullyInjected(content) {
-    return (
-      content.includes("Accept-Language") &&
-      content.includes("languageMap") &&
-      content.includes("X-Timezone")
-    );
-  }
+  for (const file of files) {
+    const filePath = path.join(utilsDir, file);
+    const original = fs.readFileSync(filePath, "utf8");
+    let content = removeDuplicateRequestHeaderInjection(original);
+    content = content.replace(generatedHeaderPattern, "");
+    content = content.replace(/\n{3,}/g, "\n\n");
 
-  /**
-   * 在 menuKey 行前注入或替换 header 设置
-   * @param {string} content - 文件内容
-   * @param {string} filePath - 文件路径
-   * @param {string} file - 文件名
-   * @returns {object|null} 注入结果，null 表示未处理
-   */
-  function injectAtMenuKey(content, filePath, file) {
-    const menuKeyMatch = content.match(/^([ \t]*)config\.headers\["menuKey"\]/m);
-    if (!menuKeyMatch) return null;
-
-    const indent = menuKeyMatch[1];
-
-    // 已完整注入：跳过
-    if (isFullyInjected(content)) return "skip";
-
-    // 有旧的 Accept-Language（无 languageMap 或无 X-Timezone）：原地替换
-    if (content.includes("Accept-Language")) {
-      // 移除旧的 Accept-Language 行（可能有多行，全部清除）
-      let newContent = content.replace(
-        /^[ \t]*config\.headers\["Accept-Language"\].*$/gm,
-        "",
-      );
-      // 移除可能残留的旧 X-Timezone 行
-      newContent = newContent.replace(
-        /^[ \t]*config\.headers\["X-Timezone"\].*$/gm,
-        "",
-      );
-      // 移除可能残留的旧 languageMap 块（单行或多行）
-      newContent = newContent.replace(
-        /^[ \t]*const languageMap = \{[\s\S]*?\};\s*$/gm,
-        "",
-      );
-      // 清理被移除行留下的空行（连续 2+ 空行合并为 1 个空行）
-      newContent = newContent.replace(/\n{3,}/g, "\n\n");
-      // 清理函数体开头的多余空行（如 `=> {\n\n  const` -> `=> {\n  const`）
-      newContent = newContent.replace(/(\{)\n\n+/g, "$1\n");
-
-      // 重新匹配 menuKey 位置（内容可能已变化）
-      const newMenuKeyMatch = newContent.match(
+    if (file === menuKeyFile) {
+      const menuKeyMatch = content.match(
         /^([ \t]*)config\.headers\["menuKey"\]/m,
       );
-      if (newMenuKeyMatch) {
-        const insertPos = newMenuKeyMatch.index;
-        const newIndent = newMenuKeyMatch[1];
+      if (menuKeyMatch) {
         const injection =
-          headerLines.map((line) => newIndent + line).join("\n") + "\n";
-        newContent =
-          newContent.slice(0, insertPos) + injection + newContent.slice(insertPos);
-      }
-      fs.writeFileSync(filePath, newContent, "utf8");
-      return { updated: true, file: path.join("src/utils", file) };
-    }
-
-    // 无 Accept-Language：在 menuKey 前注入
-    const injection =
-      headerLines.map((line) => indent + line).join("\n") + "\n";
-    const insertPos = menuKeyMatch.index;
-    const newContent =
-      content.slice(0, insertPos) + injection + content.slice(insertPos);
-    fs.writeFileSync(filePath, newContent, "utf8");
-    return { updated: true, file: path.join("src/utils", file) };
-  }
-
-  /**
-   * 在 interceptors.request.use 回调顶部注入 header 设置
-   * @param {string} content - 文件内容
-   * @param {string} filePath - 文件路径
-   * @param {string} file - 文件名
-   * @returns {object|null} 注入结果，null 表示未处理
-   */
-  function injectAtInterceptor(content, filePath, file) {
-    // 已完整注入：跳过
-    if (isFullyInjected(content)) return "skip";
-
-    // 有旧的不完整注入：不在此处处理（由 menuKey 路径处理）
-    if (content.includes("Accept-Language")) return null;
-
-    const interceptorPattern =
-      /(interceptors\.request\.use\(\s*(?:\(([^)]*)\)\s*=>|function\s*\(([^)]*)\))\s*\{)/;
-    const match = content.match(interceptorPattern);
-    if (!match) return null;
-
-    const afterMatch = content.slice(match.index + match[0].length);
-    const nextLineMatch = afterMatch.match(/^([ \t]*)\S/m);
-    const indent = nextLineMatch ? nextLineMatch[1] : "  ";
-    const injection =
-      "\n" + headerLines.map((line) => indent + line).join("\n");
-    const insertPos = match.index + match[0].length;
-    const newContent =
-      content.slice(0, insertPos) + injection + content.slice(insertPos);
-    fs.writeFileSync(filePath, newContent, "utf8");
-    return { updated: true, file: path.join("src/utils", file) };
-  }
-
-  // 第一轮：优先处理含 config.headers["menuKey"] 的文件
-  for (const file of files) {
-    const filePath = path.join(utilsDir, file);
-    const content = fs.readFileSync(filePath, "utf8");
-
-    if (!content.includes('config.headers["menuKey"]')) continue;
-
-    const result = injectAtMenuKey(content, filePath, file);
-    if (result === "skip") continue;
-    if (result) return result;
-  }
-
-  // 如果含 menuKey 的文件已完整注入，清理其他文件中的冗余注入
-  let menuKeyFileFullyInjected = false;
-  for (const file of files) {
-    const filePath = path.join(utilsDir, file);
-    const content = fs.readFileSync(filePath, "utf8");
-    if (
-      content.includes('config.headers["menuKey"]') &&
-      isFullyInjected(content)
-    ) {
-      menuKeyFileFullyInjected = true;
-      break;
-    }
-  }
-
-  if (menuKeyFileFullyInjected) {
-    let cleanedFile = null;
-    for (const file of files) {
-      const filePath = path.join(utilsDir, file);
-      const content = fs.readFileSync(filePath, "utf8");
-      // 跳过含 menuKey 的文件（权威位置），只清理其他文件中的冗余注入
-      if (content.includes('config.headers["menuKey"]')) continue;
-      if (!content.includes("Accept-Language")) continue;
-
-      // 移除冗余的 header 注入
-      let newContent = content;
-      newContent = newContent.replace(
-        /^[ \t]*const languageMap = \{[\s\S]*?\};\s*$/gm,
-        "",
-      );
-      newContent = newContent.replace(
-        /^[ \t]*config\.headers\["Accept-Language"\].*$/gm,
-        "",
-      );
-      newContent = newContent.replace(
-        /^[ \t]*config\.headers\["X-Timezone"\].*$/gm,
-        "",
-      );
-      // 清理多余空行
-      newContent = newContent.replace(/\n{3,}/g, "\n\n");
-      newContent = newContent.replace(/(\{)\n\n+/g, "$1\n");
-      newContent = newContent.replace(/\n\n+(  return)/g, "\n  $1");
-
-      if (newContent !== content) {
-        fs.writeFileSync(filePath, newContent, "utf8");
-        cleanedFile = path.join("src/utils", file);
+          headerLines.map((line) => menuKeyMatch[1] + line).join("\n") + "\n";
+        content =
+          content.slice(0, menuKeyMatch.index) +
+          injection +
+          content.slice(menuKeyMatch.index);
       }
     }
-    if (cleanedFile) {
-      return { updated: true, file: cleanedFile };
+
+    if (content !== original) {
+      fs.writeFileSync(filePath, content, "utf8");
+      changedFiles.push(path.join("src/utils", file));
     }
-    return { updated: false, message: "header 注入已完成，无冗余需清理" };
   }
 
-  // 第二轮：回退到含 interceptors.request.use 的文件（仅处理未注入的）
-  for (const file of files) {
-    const filePath = path.join(utilsDir, file);
-    const content = fs.readFileSync(filePath, "utf8");
-
-    if (!content.includes("interceptors.request.use")) continue;
-
-    const result = injectAtInterceptor(content, filePath, file);
-    if (result === "skip") continue;
-    if (result) return result;
-  }
-
-  return { updated: false, message: "未找到合适的请求拦截器" };
+  return changedFiles.length > 0
+    ? {
+        updated: true,
+        file: path.join("src/utils", menuKeyFile),
+        files: changedFiles,
+      }
+    : {
+        updated: false,
+        file: path.join("src/utils", menuKeyFile),
+        message: "header 注入已完成，无冗余需清理",
+      };
 }
 
 /**

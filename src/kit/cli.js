@@ -361,7 +361,7 @@ function injectCommand(projectRoot, profile, config, flags) {
       `  package.json: ${report.details.packageJson.updated ? "已更新" : "无需更新"}`,
     );
     console.log(
-      `  @kd/components: ${report.details.kdComponentsInstall && report.details.kdComponentsInstall.ok ? "已安装最新 5.x" : "安装失败"}`,
+      `  @kd/components: ${report.details.kdComponentsInstall && report.details.kdComponentsInstall.ok ? (report.details.kdComponentsInstall.skipped ? "版本已满足" : "已安装") : "安装失败"}`,
     );
     console.log(
       `  main.js: ${report.details.mainJs.updated ? "已注入" : "无需注入"}`,

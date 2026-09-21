@@ -401,20 +401,19 @@ kd-i18n run --max-steps 100
 
 | 文件 | 改动 |
 |---|---|
-| `package.json` | 注入 `@kd/components: "^5.2.2"`、@voerkai18n/* 依赖、postcss-rtlcss、i18n 脚本；每次 inject 自动刷新到 `5.x` 范围内最新版本 |
+| `package.json` | 注入 `@kd/components: "^5.2.2"`、@voerkai18n/* 依赖、postcss-rtlcss、i18n 脚本；仅在缺失或版本过低时安装 |
 | `src/main.js` | 注入 i18nPlugin、i18nMixin、样式引入 |
 | `vue.config.js` | 注入 voerkai18n-loader 规则 |
 | `src/App.vue` | 注入 i18nMixin、路由标题逻辑 |
-| `src/utils/interceptors-*.js` | 注入 Accept-Language / X-Timezone header（注入到请求成功回调，非错误回调） |
+| `src/utils/interceptors-*.js` | 在含 `config.headers["menuKey"]` 的请求成功回调中集中注入 languageMap、Accept-Language、X-Timezone；同时清理请求拦截器中的历史重复注入 |
 
-`@kd/components` 使用 `^5.2.2` 版本范围：最低要求是 `5.2.2`，允许自动安装后续所有 `5.x` 版本。每次执行 `kd-i18n inject` 或自动流程的 inject 步骤时，都会执行：
+`@kd/components` 使用 `^5.2.2` 版本范围：最低要求是 `5.2.2`。仅在依赖缺失或版本过低时执行：
 
 ```bash
 pnpm add @kd/components@^5.2.2 --save-prod
-pnpm update @kd/components --prod
 ```
 
-这样既不会升级到 `6.x`，又能在 `@kd/components` 发布新的 `5.x` 版本后自动刷新 lockfile 和实际安装版本。
+版本已满足要求时跳过安装，避免每次 run 都刷新 lockfile 和实际安装版本。
 
 ## scan 扫描规则
 

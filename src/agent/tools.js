@@ -204,6 +204,7 @@ function createTools(projectRoot, config) {
         "执行词条提取命令（voerkai18n extract）。捕获 stdout 和 stderr 返回。",
       parameters: { type: "object", properties: {} },
       execute() {
+        const prettierFix = kit.repairPrettierConfig(projectRoot);
         const result = runShellCommandCaptured(
           config.extractCommand,
           projectRoot,
@@ -214,13 +215,14 @@ function createTools(projectRoot, config) {
           command: config.extractCommand,
           stdout: result.stdout.slice(0, 2000),
           stderr: result.stderr.slice(0, 2000),
+          prettierConfigFixed: prettierFix.updated,
         };
       },
     },
     {
-    name: "translate_entries",
+      name: "translate_entries",
       description:
-        "自动补齐翻译源文件中缺失或无效的翻译（增量模式，不破坏已有有效翻译）。provider 可选 glossary/llm/baidu/command。自动检测空翻译和占位式无效翻译（如 Text 1），只重新翻译这些条目。force=true 会清空所有翻译重新翻译，代价极大，极慎用。",
+        "自动补齐翻译源文件中缺失或无效的翻译（增量模式，不破坏已有有效翻译）。provider 可选 glossary/llm/baidu/command。自动检测空翻译和占位式无效翻译（如 Text 1），只重新翻译这些条目。provider.ok=true 但返回 ok=false 时表示仍有缺失或质量问题，必须继续调用 validate_translations 并按报告增量重试；force=true 会清空所有翻译重新翻译，代价极大，极慎用。",
       parameters: {
         type: "object",
         properties: {
@@ -275,6 +277,7 @@ function createTools(projectRoot, config) {
         "执行语言包编译命令（voerkai18n compile）。捕获 stdout 和 stderr 返回。",
       parameters: { type: "object", properties: {} },
       execute() {
+        const prettierFix = kit.repairPrettierConfig(projectRoot);
         const result = runShellCommandCaptured(
           config.compileCommand,
           projectRoot,
@@ -290,6 +293,7 @@ function createTools(projectRoot, config) {
             stderr: result.stderr.slice(0, 2000),
             idMapFixed: fixResult.idMapFixed,
             eslintFixedCount: fixResult.eslintFixedCount,
+            prettierConfigFixed: prettierFix.updated,
           };
         }
         return {
@@ -297,6 +301,7 @@ function createTools(projectRoot, config) {
           command: config.compileCommand,
           stdout: result.stdout.slice(0, 2000),
           stderr: result.stderr.slice(0, 2000),
+          prettierConfigFixed: prettierFix.updated,
         };
       },
     },

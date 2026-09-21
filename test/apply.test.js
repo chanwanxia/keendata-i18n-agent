@@ -1089,13 +1089,52 @@ test("cleanup 对跳过 apply 的基础设施文件也还原 Unicode 转义", ()
 
 test("cleanup 还原 displayNameLabel Unicode 但保留正则 Unicode 范围", () => {
   const projectRoot = createTempProject({
-    "src/test.vue": String.raw`<template><kd-input :title="displayNameLabel('\u4e2d\u6587\u540d')"></kd-input></template><script>export default { data() { return { reg: /^[^\u4e00-\u9fa5 ]*$/, regText: "^[^\\u4e00-\\u9fa5 ]*$" }; } };</script>`,
+    "src/test.vue": String.raw`<template><kd-input :title="displayNameLabel('\u4e2d\u6587\u540d')"></kd-input><p>^[\u4e00-\u9fa5]*$</p></template><script>export default { data() { return { reg: /^[^\u4e00-\u9fa5 ]*$/, regText: "^[^\\u4e00-\\u9fa5 ]*$" }; } };</script>`,
   });
   applyI18n(projectRoot, CONFIG, { dryRun: false });
   const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
   assert.ok(result.includes("displayNameLabel('中文名')"), `displayNameLabel 参数应还原中文，实际: ${result}`);
+  assert.ok(
+    result.includes(String.raw`^[\u4e00-\u9fa5]*$`),
+    `模板纯文本中的正则 Unicode 范围应保留，实际: ${result}`,
+  );
   assert.ok(result.includes(String.raw`/^[^\u4e00-\u9fa5 ]*$/`), `正则 Unicode 范围应保留，实际: ${result}`);
   assert.ok(result.includes(String.raw`"^[^\\u4e00-\\u9fa5 ]*$"`), `双反斜杠字符串应保留，实际: ${result}`);
+});
+
+test("包装跨行正则纯文本时转义换行并保留反斜杠", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": String.raw`<template><p>第一行：^\d+$ 或
+第二行：^\.\d+$</p></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+
+  assert.ok(
+    result.includes('t("第一行：^\\\\d+$ 或\\n第二行：^\\\\.\\\\d+$")'),
+    `跨行正则应转义为合法的 t() 字符串，实际: ${result}`,
+  );
+});
+
+test("cleanup 修复历史 t() 文本中的真实换行", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": String.raw`<template><p>{{ t("第一行：^\\d+$ 或
+第二行：^\\.\\d+$") }}</p></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+
+  assert.ok(
+    result.includes('t("第一行：^\\\\d+$ 或\\n第二行：^\\\\.\\\\d+$")'),
+    `历史 t() 文案中的换行应被修复，实际: ${result}`,
+  );
+  assert.strictEqual(
+    /t\("[^"\n]*\n[^"\n]*"\)/.test(result),
+    false,
+    `t() 字符串中不应残留真实换行，实际: ${result}`,
+  );
 });
 
 test("cleanup 保留 RegExp 构造函数字符串中的 Unicode 范围", () => {

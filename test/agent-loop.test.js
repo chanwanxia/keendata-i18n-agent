@@ -1,6 +1,11 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { formatLlmFailureMessage, formatToolResult, runAgentLoop } = require("../src/agent/loop");
+const {
+  formatLlmFailureMessage,
+  formatToolResult,
+  reconcileCheckpointChecks,
+  runAgentLoop,
+} = require("../src/agent/loop");
 
 /**
  * 创建 mock LLM client，按预设序列返回响应
@@ -377,6 +382,88 @@ test("translate_entries 仅有翻译校验问题时必须继续校验", async ()
   assert.strictEqual(result.timeline.length, 2);
 });
 
+test("translate_entries provider 成功但结果不完整时不能被视为执行失败", async () => {
+  const tools = [
+    {
+      name: "translate_entries",
+      description: "translation quality issue",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({
+        ok: false,
+        provider: { ok: true, used: "llm", remainingCount: 2 },
+        summary: { issueCount: 0 },
+        issues: [],
+      }),
+    },
+    {
+      name: "validate_translations",
+      description: "translation validation",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({ ok: true }),
+    },
+  ];
+
+  const client = createMockClient([
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                function: { name: "translate_entries", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_2",
+                function: {
+                  name: "validate_translations",
+                  arguments: "{}",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "继续处理",
+            tool_calls: null,
+          },
+        },
+      ],
+    },
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.timeline.length, 2);
+});
+
 test("translate_entries provider 执行失败时立即中断", async () => {
   const tools = [
     {
@@ -477,6 +564,28 @@ test("检查未通过时不能直接宣称完成", async () => {
 
   assert.strictEqual(result.ok, false);
   assert.ok(result.message.includes("doctor"));
+});
+
+test("恢复 checkpoint 时重新核对并清除已修复的检查", async () => {
+  const result = await reconcileCheckpointChecks(["doctor", "validate_translations"], [
+    {
+      name: "doctor",
+      execute: () => ({ ok: true, summary: { failCount: 0 } }),
+    },
+    {
+      name: "validate_translations",
+      execute: () => ({
+        ok: false,
+        summary: { missingLanguageCount: 2, issueCount: 1 },
+      }),
+    },
+  ]);
+
+  assert.deepStrictEqual(result.unresolvedChecks, ["validate_translations"]);
+  assert.deepStrictEqual(result.reports.doctor, {
+    ok: true,
+    summary: { failCount: 0 },
+  });
 });
 
 test("多个 tool_calls 在同一轮执行", async () => {

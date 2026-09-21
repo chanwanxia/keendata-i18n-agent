@@ -6,6 +6,7 @@ const os = require("os");
 const {
   injectPackageJson,
   inject,
+  injectAcceptLanguage,
   installKdComponents,
   KD_COMPONENTS_INSTALL_SPEC,
   KD_COMPONENTS_VERSION_RANGE,
@@ -68,7 +69,7 @@ test("@kd/components 旧版本会统一升级到 5.2.2 范围并迁移到 depend
   assert.strictEqual(pkg.devDependencies["@kd/components"], undefined);
 });
 
-test("installKdComponents 每次刷新 5.x 范围内最新版本", () => {
+test("installKdComponents 仅在缺失依赖时安装一次", () => {
   const projectRoot = createTempProject({
     "package.json": JSON.stringify({ name: "test" }),
   });
@@ -90,9 +91,108 @@ printf '%s\n' "$*" >> "${logPath}"
   const commands = fs.readFileSync(logPath, "utf8");
 
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.command, `pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod && pnpm update @kd/components --prod`);
+  assert.strictEqual(result.command, `pnpm add ${KD_COMPONENTS_INSTALL_SPEC} --save-prod`);
   assert.match(commands, /add @kd\/components@\^5\.2\.2 --save-prod/);
-  assert.match(commands, /update @kd\/components --prod/);
+  assert.doesNotMatch(commands, /update @kd\/components/);
+});
+
+test("installKdComponents 已满足最低版本时跳过安装", () => {
+  const projectRoot = createTempProject({
+    "package.json": JSON.stringify({
+      name: "test",
+      dependencies: { "@kd/components": "^5.2.2" },
+    }),
+  });
+
+  const result = installKdComponents(projectRoot);
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.command, null);
+});
+
+test("请求头集中到 menuKey 文件，并清理请求拦截器历史重复注入", () => {
+  const projectRoot = createTempProject({
+    "src/utils/interceptors-utils.js": `export function requestSuccessInterceptor(config) {
+  const languageMap = {
+    zh: "zh-CN",
+    en: "en-US",
+    jp: "ja-JP",
+    ar: "ar",
+  };
+  config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];
+  config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";
+  config.headers["menuKey"] = sessionStorage.getItem("menuKey") || "";
+  return config;
+}
+`,
+    "src/utils/axios-config-utils.js": `export function requestConfig(config) {
+  const languageMap = {
+    zh: "zh-CN",
+    en: "en-US",
+    jp: "ja-JP",
+    ar: "ar",
+  };
+  config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];
+  config.headers["X-Timezone"] = localStorage.getItem("i18n-tz") || "";
+  return config;
+}
+`,
+    "src/utils/request-utils.js": `instance.interceptors.request.use(
+  (config) => {
+  config.headers = config.headers || {};
+  const languageMap = {
+    zh: "zh-CN",
+    en: "en-US",
+    jp: "ja-JP",
+    ar: "ar",
+  };
+  config.headers["Accept-Language"] = languageMap[localStorage.getItem("language") || "zh"];
+  return requestSuccessInterceptor(config);
+  },
+  (error) => requestErrorInterceptor(error),
+);
+`,
+  });
+
+  const result = injectAcceptLanguage(projectRoot);
+  const interceptor = fs.readFileSync(
+    path.join(projectRoot, "src/utils/interceptors-utils.js"),
+    "utf8",
+  );
+  const axiosConfig = fs.readFileSync(
+    path.join(projectRoot, "src/utils/axios-config-utils.js"),
+    "utf8",
+  );
+  const request = fs.readFileSync(
+    path.join(projectRoot, "src/utils/request-utils.js"),
+    "utf8",
+  );
+
+  assert.strictEqual(result.updated, true);
+  assert.ok(
+    interceptor.indexOf('config.headers["X-Timezone"]') <
+      interceptor.indexOf('config.headers["menuKey"]'),
+  );
+  assert.ok(
+    interceptor.indexOf('config.headers["Accept-Language"]') <
+      interceptor.indexOf('config.headers["menuKey"]'),
+  );
+  assert.match(interceptor, /const languageMap = \{/);
+  assert.match(
+    interceptor,
+    /config\.headers\["Accept-Language"\] = languageMap\[localStorage\.getItem\("language"\) \|\| "zh"\];/,
+  );
+  assert.match(
+    interceptor,
+    /config\.headers\["X-Timezone"\] = localStorage\.getItem\("i18n-tz"\) \|\| "";/,
+  );
+  assert.doesNotMatch(axiosConfig, /Accept-Language/);
+  assert.doesNotMatch(request, /Accept-Language/);
+  assert.doesNotMatch(request, /languageMap/);
+  assert.doesNotMatch(request, /config\.headers = config\.headers/);
+  assert.match(request, /requestSuccessInterceptor\(config\)/);
+  assert.match(request, /requestErrorInterceptor\(error\)/);
 });
 
 test("依赖安装失败时 inject 不继续修改源码", () => {

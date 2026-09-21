@@ -280,6 +280,7 @@ async function executeAction(action, state, flags) {
  }
 
   if (action === "extract") {
+    kit.repairPrettierConfig(projectRoot);
     const status = kit.runShellCommand(
       config.extractCommand,
       projectRoot,

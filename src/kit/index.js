@@ -14,6 +14,7 @@ const { inspectProjectSetup } = require("./doctor");
 const { inject, checkGlobalCliVersion, injectPackageJson, injectMainJs, injectVueConfig, injectAppVue, injectAcceptLanguage } = require("./inject");
 const { runShellCommand } = require("./shell");
 const { runShellCommandCaptured } = require("./shell");
+const { repairPrettierConfig } = require("./prettier");
 const { scaffold, ensurePostcssConfig } = require("./scaffold");
 const { scanHardcodedChinese } = require("./scan");
 const { translateTranslations } = require("./translate");
@@ -56,6 +57,7 @@ module.exports = {
   resolveProjectRoot,
   runShellCommand,
   runShellCommandCaptured,
+  repairPrettierConfig,
   runEslintFix,
   scaffold,
   scanHardcodedChinese,

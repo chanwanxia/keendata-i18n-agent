@@ -135,6 +135,34 @@ test("console 调用中的中文被跳过", () => {
   );
 });
 
+test("displayName 中文侧字段和默认参数不重复扫描", () => {
+  const projectRoot = createTempProject({
+    "src/mixins/i18n-mixin.js": `export default {
+  methods: {
+    displayNameConfig() {
+      return {
+        chLabel: "中文名称",
+        chPlaceholder: "请输入中文名称",
+        chTip: "请输入中文名称",
+        otherLabel: "显示名称",
+      };
+    },
+    displayNameLabel(chLabel = "中文名称", otherLabel = "显示名称") {
+      return chLabel || otherLabel;
+    },
+  },
+};`,
+  });
+
+  const result = scanHardcodedChinese(projectRoot, CONFIG);
+  assert.strictEqual(
+    result.summary.candidateCount,
+    1,
+    "仅 otherLabel 文案应继续进入扫描结果",
+  );
+  assert.strictEqual(result.candidates[0].text.includes("otherLabel"), true);
+});
+
 test("跨行 console 调用中的中文被跳过", () => {
   const projectRoot = createTempProject({
     "src/test.js": `function test() {\n  console.log(\n    "调试中文信息"\n  );\n}`,

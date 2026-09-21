@@ -161,7 +161,7 @@ export const i18nMixin = {
           otherPlaceholder: this.t("请输入显示名称"),
           chTip: "请输入中文名称",
           otherTip: this.t("请输入显示名称"),
-          required: false,
+          required: true,
           rules: [],
           debug: false,
         },

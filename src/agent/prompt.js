@@ -50,7 +50,7 @@ function buildSystemPrompt(projectRoot, config) {
 doctor 检查所有 fail 项（warn 仅用于 preset 未命中这种信息性提示，无需修复）。如果 doctor 返回 fail 项，必须修复后才能继续后续流程：
 - 文件缺失类 fail（translation-file、rtl-style、width-adaptation、component-locale、rtl-mixin、elementui-utils）：重新执行 scaffold 修复
 - 代码注入类 fail（bootstrap-main、webpack-loader、style-imports、accept-language、route-title、layout-header-language、dependencies、scripts、postcss-config）：重新执行 inject 修复
-- kd-components-version 由 inject 自动执行 pnpm add @kd/components@^5.2.2 --save-prod && pnpm update @kd/components --prod 修复；如果安装命令失败，必须立即停止并明确报告失败原因
+- kd-components-version 由 inject 在缺失或版本过低时执行 pnpm add @kd/components@^5.2.2 --save-prod 修复；版本已满足要求时不得重复安装；如果安装命令失败，必须立即停止并明确报告失败原因
 - 无法自动修复的 fail（global-cli 版本不匹配）：先完成其他可自动修复项，再在最终结果中明确列出需要用户手动处理的项；这些 fail 未解决前不能宣称流程成功
 - 修复后重新执行 doctor 确认 fail 项已消除
 
@@ -74,6 +74,7 @@ translate 之后必须执行 validate，并检查结果：
 ## 错误恢复
 
 - 工具返回 error、受控命令执行非零退出码、写入失败、翻译 provider 失败或其他执行工具返回 ok=false 时，必须立即停止；不要继续调用工具、修改文件或宣称流程成功
+- translate_entries 返回 ok=false 但 provider.ok=true 时，表示翻译结果仍有缺失或质量问题，不是 provider 执行异常：必须继续调用 validate_translations，根据报告再次增量调用 translate_entries，不能自行结束流程
 - doctor、validate_translations、check_generated_files 返回 ok=false 时属于检查结果，不是执行异常；可以读取报告定位问题，但只有检查通过后才能进入后续依赖步骤或宣称成功
 - 工具参数 JSON 无法解析、未知工具或工具返回无效结果时，必须立即停止
 - 发生执行失败后，等待用户修复外部原因，再重新运行；不要依靠重复写文件来掩盖错误

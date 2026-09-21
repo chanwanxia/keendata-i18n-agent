@@ -153,6 +153,9 @@ function getFatalToolFailure(toolName, result) {
     const hasValidationIssues =
       summary.issueCount > 0 ||
       (Array.isArray(result.issues) && result.issues.length > 0);
+    if (provider.ok === true) {
+      return null;
+    }
     if (hasValidationIssues && provider.ok !== false) {
       return null;
     }
@@ -168,6 +171,48 @@ function getFatalToolFailure(toolName, result) {
     result.stderr ||
     `工具返回 ok=false${result.summary ? `: ${JSON.stringify(result.summary)}` : ""}`
   );
+}
+
+/**
+ * 重新核对 checkpoint 中未通过的只读检查，避免外部修复后继续携带旧失败状态。
+ * @param {string[]} unresolvedChecks - checkpoint 中记录的未通过检查
+ * @param {object[]} tools - agent 工具数组
+ * @returns {Promise<{unresolvedChecks: string[], reports: object}>} 核对后的状态和摘要
+ */
+async function reconcileCheckpointChecks(unresolvedChecks, tools) {
+  const nextUnresolvedChecks = [];
+  const reports = {};
+
+  for (const checkName of unresolvedChecks) {
+    const tool = tools.find((item) => item.name === checkName);
+    if (!tool) {
+      nextUnresolvedChecks.push(checkName);
+      reports[checkName] = { ok: false, error: "检查工具不存在" };
+      continue;
+    }
+
+    try {
+      const result = await tool.execute({});
+      reports[checkName] = {
+        ok: result && result.ok === true,
+        summary: result && result.summary,
+      };
+      if (!result || result.ok !== true) {
+        nextUnresolvedChecks.push(checkName);
+      }
+    } catch (error) {
+      nextUnresolvedChecks.push(checkName);
+      reports[checkName] = {
+        ok: false,
+        error: error && error.message ? error.message : String(error),
+      };
+    }
+  }
+
+  return {
+    unresolvedChecks: nextUnresolvedChecks,
+    reports,
+  };
 }
 
 /**
@@ -390,6 +435,9 @@ async function runAgentLoop(
     const checkpoint = loadCheckpoint(projectRoot);
     if (checkpoint) {
       messages = checkpoint.messages;
+      if (messages[0] && messages[0].role === "system") {
+        messages[0] = { ...messages[0], content: systemPrompt };
+      }
       startStep = checkpoint.stepCount || 0;
       stepCount = startStep;
       if (checkpoint.timeline) {
@@ -398,6 +446,19 @@ async function runAgentLoop(
       if (Array.isArray(checkpoint.unresolvedChecks)) {
         unresolvedChecks = checkpoint.unresolvedChecks;
       }
+      const reconciliation = await reconcileCheckpointChecks(
+        unresolvedChecks,
+        tools,
+      );
+      unresolvedChecks = reconciliation.unresolvedChecks;
+      messages.push({
+        role: "user",
+        content: `这是一次断点恢复。请继续处理，不要根据历史 assistant 消息自行结束。恢复时重新核对结果：${JSON.stringify(
+          reconciliation.reports,
+        )}。当前仍未通过的检查：${
+          unresolvedChecks.length > 0 ? unresolvedChecks.join("、") : "无"
+        }。只有所有成功标准都通过后才能结束。`,
+      });
       console.log(
         `[i18n-agent] 从第 ${startStep} 步恢复执行（共 ${timeline.length} 条历史记录）`,
       );
@@ -702,4 +763,6 @@ module.exports = {
   getCheckpointPath,
   CHECKPOINT_DIR,
   formatLlmFailureMessage,
+  getFatalToolFailure,
+  reconcileCheckpointChecks,
 };

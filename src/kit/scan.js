@@ -1,6 +1,9 @@
 const fs = require("fs");
 const { collectTargetFiles, toRelative } = require("./files");
 
+const DISPLAY_NAME_CHINESE_FIELD_PATTERN =
+  /\b(?:chLabel|chPlaceholder|chTip)\b\s*(?::|=)/;
+
 /**
  * 扫描项目源码中未被 t() 包裹的硬编码中文
  * @param {string} projectRoot - 目标项目根路径
@@ -67,6 +70,7 @@ function shouldIgnoreLine(line, config) {
   const trimmed = line.trim();
   if (!trimmed) return true;
   if (/^(\/\/|\/\*|\*|<!--)/.test(trimmed)) return true;
+  if (DISPLAY_NAME_CHINESE_FIELD_PATTERN.test(line)) return true;
   return config.hardcodedChinese.ignorePatterns.some((pattern) =>
     line.includes(pattern),
   );
