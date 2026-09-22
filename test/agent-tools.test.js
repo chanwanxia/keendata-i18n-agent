@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { createTools, toToolDefinitions } = require("../src/agent/tools");
+const kit = require("../src/kit");
 
 /**
  * 创建临时项目并写入文件
@@ -103,8 +104,36 @@ test("write_file 覆盖已存在文件内容", () => {
     content: 'const x = 1;\n',
   });
   assert.strictEqual(result.written, true);
+  assert.ok(result.lint);
+  assert.strictEqual(result.lint.ok, true);
   const content = fs.readFileSync(path.join(dir, "src/new.js"), "utf8");
   assert.ok(content.includes("const x = 1"));
+});
+
+test("write_file 的 lint 诊断不阻断已成功的文件写入", () => {
+  const dir = createTempProject({ "src/broken.vue": "" });
+  const originalRunEslintFix = kit.runEslintFix;
+  kit.runEslintFix = () => ({
+    ok: false,
+    fixedCount: 1,
+    errors: ["eslint 仍有无法自动修复的错误，请手动检查"],
+    warnings: [],
+  });
+
+  try {
+    const tools = createTools(dir, CONFIG);
+    const writeTool = tools.find((t) => t.name === "write_file");
+    const result = writeTool.execute({
+      relativePath: "src/broken.vue",
+      content: "<template><div>内容</div></template>\n",
+    });
+    assert.strictEqual(result.written, true);
+    assert.strictEqual(result.error, undefined);
+    assert.strictEqual(result.lint.ok, false);
+    assert.ok(result.lint.errors.length > 0);
+  } finally {
+    kit.runEslintFix = originalRunEslintFix;
+  }
 });
 
 test("write_file 保留 iconfont 私有区 Unicode 转义", () => {

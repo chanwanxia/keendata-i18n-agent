@@ -61,7 +61,7 @@ function createTools(projectRoot, config) {
     {
       name: "write_file",
       description:
-        "覆盖目标项目中指定相对路径的已存在业务文件；不得用来创建 layout/header 备选接入文件。",
+        "覆盖目标项目中指定相对路径的已存在业务文件；写入后自动执行完整 eslint --fix；不得用来创建 layout/header 备选接入文件。",
       parameters: {
         type: "object",
         properties: {
@@ -89,10 +89,29 @@ function createTools(projectRoot, config) {
           ? kit.deescapeUnicode(args.content)
           : args.content;
         fs.writeFileSync(filePath, content, "utf8");
+        let lint = { ok: true, fixedCount: 0, errors: [], warnings: [] };
+        try {
+          lint = kit.runEslintFix
+            ? kit.runEslintFix(projectRoot, [args.relativePath], { full: true })
+            : lint;
+        } catch (error) {
+          lint = {
+            ok: false,
+            fixedCount: 0,
+            errors: [
+              `eslint 自动修复异常: ${
+                error && error.message ? error.message : String(error)
+              }`,
+            ],
+            warnings: [],
+          };
+        }
+        const finalContent = fs.readFileSync(filePath, "utf8");
         return {
           relativePath: args.relativePath,
           written: true,
-          bytes: content.length,
+          bytes: finalContent.length,
+          lint,
         };
       },
     },

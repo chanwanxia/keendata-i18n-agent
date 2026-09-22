@@ -49,6 +49,17 @@ function formatToolResult(toolName, result) {
       if (result.skipped) {
         return `跳过写入 ${result.relativePath}: ${result.reason || "策略限制"}`;
       }
+      if (result.lint) {
+        const lintMessages = [
+          ...(result.lint.errors || []),
+          ...(result.lint.warnings || []),
+        ];
+        if (lintMessages.length) {
+          return result.written
+            ? `写入 ${result.relativePath} (${result.bytes} 字节)，lint 提示: ${lintMessages.join("；")}`
+            : `写入 ${result.relativePath} 失败，lint 提示: ${lintMessages.join("；")}`;
+        }
+      }
       return result.written
         ? `写入 ${result.relativePath} (${result.bytes} 字节)`
         : "写入失败";

@@ -300,6 +300,83 @@ test("工具返回 ok=false 时中断同一轮后续调用", async () => {
   assert.ok(result.message.includes("command failed"));
 });
 
+test("write_file 的 lint 诊断不会中断 agent", async () => {
+  let laterToolCalled = false;
+  const tools = [
+    {
+      name: "write_file",
+      description: "write with lint diagnostics",
+      parameters: { type: "object", properties: {} },
+      execute: () => ({
+        written: true,
+        relativePath: "src/broken.vue",
+        bytes: 10,
+        lint: {
+          ok: false,
+          fixedCount: 1,
+          errors: ["eslint 仍有无法自动修复的错误，请手动检查"],
+          warnings: [],
+        },
+      }),
+    },
+    {
+      name: "later_write",
+      description: "must execute",
+      parameters: { type: "object", properties: {} },
+      execute: () => {
+        laterToolCalled = true;
+        return { written: true };
+      },
+    },
+  ];
+
+  const client = createMockClient([
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                function: { name: "write_file", arguments: "{}" },
+              },
+              {
+                id: "call_2",
+                function: { name: "later_write", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "继续处理",
+            tool_calls: null,
+          },
+        },
+      ],
+    },
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(laterToolCalled, true);
+  assert.ok(result.timeline[0].result.includes("eslint"));
+});
+
 test("translate_entries 仅有翻译校验问题时必须继续校验", async () => {
   const tools = [
     {

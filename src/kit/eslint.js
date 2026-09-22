@@ -60,18 +60,21 @@ function isEslintAvailable(projectRoot) {
  * 对指定文件列表执行 eslint --fix
  * @param {string} projectRoot - 目标项目根路径
  * @param {string[]} relativeFiles - 相对路径文件列表
- * @returns {object} { ok, fixedCount, errors }
+ * @param {object} [options] - 修复选项
+ * @param {boolean} [options.full=false] - 是否启用完整格式规则
+ * @returns {object} { ok, fixedCount, errors, warnings }
  */
-function runEslintFix(projectRoot, relativeFiles) {
+function runEslintFix(projectRoot, relativeFiles, options = {}) {
   if (relativeFiles.length === 0) {
-    return { ok: true, fixedCount: 0, errors: [] };
+    return { ok: true, fixedCount: 0, errors: [], warnings: [] };
   }
 
   if (!hasEslintConfig(projectRoot)) {
     return {
       ok: true,
       fixedCount: 0,
-      errors: ["目标项目未配置 eslint，跳过自动修复"],
+      errors: [],
+      warnings: ["目标项目未配置 eslint，跳过自动修复"],
     };
   }
 
@@ -79,7 +82,8 @@ function runEslintFix(projectRoot, relativeFiles) {
     return {
       ok: true,
       fixedCount: 0,
-      errors: ["目标项目未安装 eslint，跳过自动修复"],
+      errors: [],
+      warnings: ["目标项目未安装 eslint，跳过自动修复"],
     };
   }
 
@@ -89,41 +93,64 @@ function runEslintFix(projectRoot, relativeFiles) {
   );
 
   if (existingFiles.length === 0) {
-    return { ok: true, fixedCount: 0, errors: [] };
+    return { ok: true, fixedCount: 0, errors: [], warnings: [] };
   }
 
   const fileList = existingFiles
     .map((f) => `"${f.replace(/"/g, '\\"')}"`)
     .join(" ");
 
- // 使用 --fix 自动修复，--no-error-on-unmatched-pattern 避免文件不匹配时报错
- // --fix-only 仅修复可自动修复的问题
- // --rule 'prettier/prettier: off' 禁用 prettier 格式化，避免清除项目原有注释和格式
- // --rule 'no-console: off' 不修改项目原有的 console 语句
-  // --rule 'vue/max-attributes-per-line: off' 等禁用 vue 模板格式化规则，
-  // 避免对工具未修改的模板代码进行强制换行等格式变更
-  const command = `npx eslint --fix --no-error-on-unmatched-pattern --rule 'prettier/prettier: off' --rule 'no-console: off' --rule 'vue/max-attributes-per-line: off' --rule 'vue/first-attribute-linebreak: off' --rule 'vue/multiline-html-element-content-newline: off' ${fileList}`;
+  // 使用 --fix 自动修复，--no-error-on-unmatched-pattern 避免文件不匹配时报错。
+  // apply / inject 默认关闭容易改动既有排版的规则；write_file 使用完整模式。
+  const eslintArgs = options.full
+    ? "--fix --no-error-on-unmatched-pattern"
+    : "--fix --no-error-on-unmatched-pattern --rule 'prettier/prettier: off' --rule 'no-console: off' --rule 'vue/max-attributes-per-line: off' --rule 'vue/first-attribute-linebreak: off' --rule 'vue/multiline-html-element-content-newline: off'";
+  const eslintExecutable = fs.existsSync(
+    path.join(projectRoot, "node_modules/.bin/eslint"),
+  )
+    ? "pnpm exec eslint"
+    : "eslint";
+  const command = `${eslintExecutable} ${eslintArgs} ${fileList}`;
   const result = runShellCommandCaptured(
     command,
     projectRoot,
     "eslint --fix 自动修复",
   );
 
-  // eslint --fix 返回 0 表示无错误或已自动修复，返回 1 表示存在无法自动修复的错误
-  // 返回 2 表示配置错误等严重问题
-  if (result.status === 2) {
+  // eslint --fix 返回 0 表示无错误或已自动修复，返回 1 表示存在无法自动修复的错误。
+  // 其他非零值表示配置、命令执行等严重问题。
+  if (result.status !== 0 && result.status !== 1) {
     return {
       ok: false,
       fixedCount: 0,
-      errors: [`eslint 配置错误: ${result.stderr.slice(0, 500)}`],
+      errors: [
+        result.status === 2
+          ? `eslint 配置错误: ${result.stderr.slice(0, 500)}`
+          : `eslint 执行失败，退出码 ${result.status}: ${result.stderr.slice(0, 500)}`,
+      ],
+      warnings: [],
     };
   }
 
-  // status 0 或 1 都算修复完成（1 表示有残留错误但 fix 已执行）
+  if (options.full && result.status !== 0) {
+    return {
+      ok: false,
+      fixedCount: existingFiles.length,
+      errors: [
+        result.status === 1
+          ? "eslint 仍有无法自动修复的错误，请手动检查"
+          : `eslint 执行失败，退出码 ${result.status}: ${result.stderr.slice(0, 500)}`,
+      ],
+      warnings: [],
+    };
+  }
+
+  // 保守模式允许先完成自动修复，再由后续流程报告仍需手动处理的规则。
   return {
     ok: true,
     fixedCount: existingFiles.length,
-    errors: result.status === 1 ? ["部分规则无法自动修复，需手动检查"] : [],
+    errors: [],
+    warnings: result.status === 1 ? ["部分规则无法自动修复，需手动检查"] : [],
   };
 }
 

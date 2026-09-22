@@ -91,6 +91,7 @@ translate 之后必须执行 validate，并检查结果：
 - **禁止用 write_file 重写 scaffold 生成的基础设施文件**（src/languages/、src/utils/elementui-utils.js、src/mixins/i18n-mixin.js、src/utils/i18n.js、postcss.config.js 等）。这些文件由 scaffold 工具按金标模板生成，手动重写会导致 API 不兼容和运行时错误。如果 doctor 报告这些文件有问题，用 scaffold（force=true）重新生成，不要手动修改。
 - **禁止用 write_file 创建任何新文件**。write_file 只允许覆盖已存在业务文件；新增基础设施、翻译源、样式、layout/header 接入等必须交给 scaffold/apply/inject 等确定性工具。不匹配就跳过，不要为了消除 warn 创建空壳文件或尝试不同目录。
 - write_file 用于兜底修改已存在业务文件。遇到多个同类 scan 残留时，优先补充或调用 apply_i18n 的确定性转换，避免不必要的整文件重写；但不得因为文件较大而遗漏需要处理的国际化改写。
+- write_file 写入后会自动执行目标项目的完整 eslint --fix（包括 Prettier/Vue 排版规则）。lint 结果仅作为诊断：即使存在语法错误、不可自动修复规则、配置错误或命令异常，也必须继续后续流程；但要保留并报告 lint 提示，不得宣称该文件 lint 已通过。
 - 手动覆盖业务文件时避免调整无关代码顺序和局部结构。
 - 手动修改时，将中文文案包裹为 t("中文") 调用，确保 voerkai18n 能提取
 
