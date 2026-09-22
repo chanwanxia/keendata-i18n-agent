@@ -684,6 +684,9 @@ test("多个 tool_calls 在同一轮执行", async () => {
   assert.strictEqual(result.timeline.length, 2);
   assert.strictEqual(result.timeline[0].action, "add");
   assert.strictEqual(result.timeline[1].action, "mul");
+  assert.strictEqual(typeof result.timeline[0].llmElapsedMs, "number");
+  assert.strictEqual(typeof result.timeline[0].toolElapsedMs, "number");
+  assert.strictEqual(typeof result.timeline[0].totalElapsedMs, "number");
 });
 
 test("formatToolResult 使用 inject details 统计更新接入点", () => {

@@ -61,7 +61,7 @@ function createTools(projectRoot, config) {
     {
       name: "write_file",
       description:
-        "覆盖目标项目中指定相对路径的文件。仅用于修改已存在的业务文件；不得用来创建 layout/header 备选接入文件。",
+        "覆盖目标项目中指定相对路径的已存在业务文件；不得用来创建 layout/header 备选接入文件。",
       parameters: {
         type: "object",
         properties: {
@@ -88,15 +88,6 @@ function createTools(projectRoot, config) {
         const content = kit.deescapeUnicode
           ? kit.deescapeUnicode(args.content)
           : args.content;
-        const commentCheck = validateWritePreservesComments(
-          fs.readFileSync(filePath, "utf8"),
-          content,
-        );
-        if (!commentCheck.ok) {
-          return {
-            error: `禁止写入: ${args.relativePath} 删除了已有注释。${commentCheck.message}`,
-          };
-        }
         fs.writeFileSync(filePath, content, "utf8");
         return {
           relativePath: args.relativePath,
@@ -339,91 +330,6 @@ function createTools(projectRoot, config) {
       },
     },
   ];
-}
-
-/**
- * 校验 write_file 覆盖内容时没有删除已有注释，避免 agent 手工重写造成过度修改。
- * @param {string} original - 原文件内容
- * @param {string} next - 待写入内容
- * @returns {{ ok: boolean, message: string }} 校验结果
- */
-function validateWritePreservesComments(original, next) {
-  const missingComments = extractSourceComments(original).filter(
-    (comment) => !next.includes(comment),
-  );
-  if (missingComments.length === 0) {
-    return { ok: true, message: "" };
-  }
-  return {
-    ok: false,
-    message: `缺失注释: ${missingComments.slice(0, 3).join(" | ")}`,
-  };
-}
-
-/**
- * 提取源码中需要原样保留的注释片段。
- * @param {string} source - 源码内容
- * @returns {string[]} 注释片段列表
- */
-function extractSourceComments(source) {
-  const comments = [];
-  let quote = null;
-  let escaped = false;
-
-  for (let i = 0; i < source.length; i += 1) {
-    const char = source[i];
-    const next = source[i + 1];
-
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === quote) quote = null;
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-
-    if (source.startsWith("<!--", i)) {
-      const end = source.indexOf("-->", i + 4);
-      if (end === -1) break;
-      comments.push(source.slice(i, end + 3).trim());
-      i = end + 2;
-      continue;
-    }
-
-    if (char === "/" && next === "/") {
-      const end = findLineEnd(source, i + 2);
-      comments.push(source.slice(i, end).trim());
-      i = end - 1;
-      continue;
-    }
-
-    if (char === "/" && next === "*") {
-      const end = source.indexOf("*/", i + 2);
-      if (end === -1) break;
-      comments.push(source.slice(i, end + 2).trim());
-      i = end + 1;
-    }
-  }
-
-  return [...new Set(comments)];
-}
-
-/**
- * 查找当前行结尾位置。
- * @param {string} source - 源码内容
- * @param {number} start - 起始查找位置
- * @returns {number} 行尾索引
- */
-function findLineEnd(source, start) {
-  const nextLf = source.indexOf("\n", start);
-  const nextCr = source.indexOf("\r", start);
-  if (nextLf === -1) return nextCr === -1 ? source.length : nextCr;
-  if (nextCr === -1) return nextLf;
-  return Math.min(nextLf, nextCr);
 }
 
 /**

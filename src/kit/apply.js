@@ -4,7 +4,7 @@ const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 const generate = require("@babel/generator").default;
 const t = require("@babel/types");
-const { parseComponent } = require("@vue/compiler-sfc");
+const { compileTemplate, parseComponent } = require("@vue/compiler-sfc");
 const { collectTargetFiles, toRelative } = require("./files");
 const { getPresetById } = require("./presets");
 const { runEslintFix } = require("./eslint");
@@ -22,6 +22,9 @@ const DEFAULT_TEMPLATE_ATTRIBUTES = [
   "cancelText",
   "empty-text",
   "emptyText",
+  "range-separator",
+  "col-attrs",
+  "colAttrs",
 ];
 
 const JS_PARSE_PLUGINS = [
@@ -130,12 +133,17 @@ function transformFile(source, filePath, relativePath, preset, config) {
       config,
     });
     // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
-    const tzResult = transformTimezoneJs(result.code);
-    if (tzResult.changed) {
+    let tzReplacements = 0;
+    const tzCode = withSourceCommentsMasked(result.code, (code) => {
+      const tzResult = transformTimezoneJs(code);
+      tzReplacements = tzResult.replacements;
+      return tzResult.code;
+    });
+    if (tzCode !== result.code) {
       return {
         changed: true,
-        replacements: result.replacements + tzResult.replacements,
-        code: tzResult.code,
+        replacements: result.replacements + tzReplacements,
+        code: tzCode,
       };
     }
     return result;
@@ -199,7 +207,7 @@ function transformVueFile(source, preset, config, relativePath) {
   }
 
   // "中文名称"接入变换：检测 t('中文名称')/t('显示名称')/t('中文名') 并转换为 displayNameLabel/displayNameConfig
-  const displayNameResult = transformDisplayName(code, sfc);
+  const displayNameResult = transformDisplayNameOutsideComments(code, sfc);
   if (displayNameResult.changed) {
     changed = true;
     replacements += displayNameResult.replacements;
@@ -213,36 +221,47 @@ function transformVueFile(source, preset, config, relativePath) {
         ? code.slice(sfc.script.start, sfc.script.end)
         : null;
     if (scriptContent) {
-      const rtlResult = transformRtlJsAssignments(scriptContent);
-      if (rtlResult.changed) {
+      let rtlReplacements = 0;
+      const rtlCode = withSourceCommentsMasked(scriptContent, (source) => {
+        const result = transformRtlJsAssignments(source);
+        rtlReplacements = result.replacements;
+        return result.code;
+      });
+      if (rtlCode !== scriptContent) {
         changed = true;
-        replacements += rtlResult.replacements;
-        code = code.replace(scriptContent, rtlResult.code);
+        replacements += rtlReplacements;
+        code = code.replace(scriptContent, rtlCode);
       }
       // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
-      const currentScript = rtlResult.changed ? rtlResult.code : scriptContent;
-      const tzResult = transformTimezoneJs(currentScript);
-      if (tzResult.changed) {
+      const currentScript = rtlCode !== scriptContent ? rtlCode : scriptContent;
+      let tzReplacements = 0;
+      const tzCode = withSourceCommentsMasked(currentScript, (source) => {
+        const result = transformTimezoneJs(source);
+        tzReplacements = result.replacements;
+        return result.code;
+      });
+      if (tzCode !== currentScript) {
         changed = true;
-        replacements += tzResult.replacements;
-        code = code.replace(currentScript, tzResult.code);
+        replacements += tzReplacements;
+        code = code.replace(currentScript, tzCode);
       }
     }
   }
 
   // 清理旧版 inject/mixins/import（i18nMixin 已全局引入，无需单文件声明）
-  const injectResult = cleanupLegacyInjects(code);
-  if (injectResult.changed) {
+  const injectCode = withSourceCommentsMasked(code, (source) => {
+    const result = cleanupLegacyInjects(source);
+    return result.code;
+  });
+  if (injectCode !== code) {
     changed = true;
-    code = injectResult.code;
+    code = injectCode;
   }
 
   // 还原 LLM write_file 可能引入的 \uXXXX 转义序列为实际中文字符
   const beforeDeescape = code;
   code = deescapeUnicode(code);
-  code = unwrapNestedDisplayNameLabelCalls(code);
-  code = unwrapDisplayNameLabelFirstArgTranslate(code);
-  code = unwrapDisplayNameChineseFieldTranslate(code);
+  code = cleanupTranslateArtifactsOutsideComments(code);
   if (code !== beforeDeescape) {
     changed = true;
   }
@@ -292,31 +311,44 @@ function transformVueFileFallback(source, preset, config) {
       if (!transformed.changed) return block;
       changed = true;
       replacements += transformed.replacements;
-     return block.replace(scriptContent, transformed.code);
-   },
- );
+      return block.replace(scriptContent, transformed.code);
+    },
+  );
 
   // JS 级别方向性赋值转换
-  const rtlResult = transformRtlJsAssignments(code);
-  if (rtlResult.changed) {
+  let rtlReplacements = 0;
+  const rtlCode = withSourceCommentsMasked(code, (source) => {
+    const result = transformRtlJsAssignments(source);
+    rtlReplacements = result.replacements;
+    return result.code;
+  });
+  if (rtlCode !== code) {
     changed = true;
-    replacements += rtlResult.replacements;
-    code = rtlResult.code;
+    replacements += rtlReplacements;
+    code = rtlCode;
   }
 
   // 国际化时区 JS 代码变换（Date.now/new Date/parseTime/dayjs）
-  const tzResult = transformTimezoneJs(code);
-  if (tzResult.changed) {
+  let tzReplacements = 0;
+  const tzCode = withSourceCommentsMasked(code, (source) => {
+    const result = transformTimezoneJs(source);
+    tzReplacements = result.replacements;
+    return result.code;
+  });
+  if (tzCode !== code) {
     changed = true;
-    replacements += tzResult.replacements;
-    code = tzResult.code;
+    replacements += tzReplacements;
+    code = tzCode;
   }
 
   // 清理旧版 inject/mixins/import（i18nMixin 已全局引入，无需单文件声明）
-  const injectResult = cleanupLegacyInjects(code);
-  if (injectResult.changed) {
+  const injectCode = withSourceCommentsMasked(code, (source) => {
+    const result = cleanupLegacyInjects(source);
+    return result.code;
+  });
+  if (injectCode !== code) {
     changed = true;
-    code = injectResult.code;
+    code = injectCode;
   }
 
   return { changed, replacements, code };
@@ -430,7 +462,7 @@ function transformSvgIconMargin(source, relativePath) {
  * @returns {object} 变换结果
  */
 function transformTemplate(source, preset, config) {
-  let code = normalizeMultilineTranslateCalls(source);
+  let code = source;
   let replacements = 0;
 
   // 临时遮蔽 HTML 注释，避免注释中的中文被误处理，变换完成后原样恢复
@@ -441,6 +473,7 @@ function transformTemplate(source, preset, config) {
     commentPlaceholders.push(match);
     return placeholder;
   });
+  code = normalizeMultilineTranslateCalls(code);
 
   const specialComponents = (preset && preset.rules.specialComponents) || [];
   const configuredAttributes =
@@ -577,12 +610,7 @@ function transformTemplate(source, preset, config) {
     code = datePickerResult.code;
   }
 
-  const cleanedCode = unwrapNestedDisplayNameLabelCalls(
-    unwrapNestedTranslateCalls(code),
-  );
-  const normalizedCode = unwrapDisplayNameLabelFirstArgTranslate(cleanedCode);
-  const displayNameCode =
-    unwrapDisplayNameChineseFieldTranslate(normalizedCode);
+  const displayNameCode = cleanupTranslateArtifactsOutsideComments(code);
 
   // 恢复被遮蔽的 HTML 注释（原样还原，不做任何修改）
   let finalCode = displayNameCode;
@@ -1545,13 +1573,10 @@ function transformJsFile(source, options) {
       }
 
       if (pathRef.isTemplateLiteral()) {
-        const htmlTemplate =
-          pathRef.node.expressions.length === 0
-            ? buildHtmlStringTranslateTemplateLiteral(
-                pathRef.node.quasis[0]?.value.cooked || "",
-                translator,
-              )
-            : null;
+        const htmlTemplate = buildHtmlTranslateTemplateLiteral(
+          pathRef.node,
+          translator,
+        );
         if (htmlTemplate) {
           patches.push({
             start: pathRef.node.start,
@@ -1607,10 +1632,7 @@ function transformJsFile(source, options) {
   });
 
   if (patches.length === 0) {
-    const cleaned = unwrapDisplayNameLabelFirstArgTranslate(
-      unwrapNestedDisplayNameLabelCalls(unwrapNestedTranslateCalls(source)),
-    );
-    const normalized = unwrapDisplayNameChineseFieldTranslate(cleaned);
+    const normalized = cleanupTranslateArtifactsOutsideComments(source);
     if (normalized !== source) {
       return { changed: true, replacements: 0, code: normalized };
     }
@@ -1625,10 +1647,7 @@ function transformJsFile(source, options) {
     code = injectTranslateImport(code);
   }
 
-  code = unwrapDisplayNameLabelFirstArgTranslate(
-    unwrapNestedDisplayNameLabelCalls(unwrapNestedTranslateCalls(code)),
-  );
-  code = unwrapDisplayNameChineseFieldTranslate(code);
+  code = cleanupTranslateArtifactsOutsideComments(code);
 
   return {
     changed: true,
@@ -1817,13 +1836,10 @@ function transformInlineExpression(
       }
 
       if (pathRef.isTemplateLiteral()) {
-        const htmlTemplate =
-          pathRef.node.expressions.length === 0
-            ? buildHtmlStringTranslateTemplateLiteral(
-                pathRef.node.quasis[0]?.value.cooked || "",
-                translator,
-              )
-            : null;
+        const htmlTemplate = buildHtmlTranslateTemplateLiteral(
+          pathRef.node,
+          translator,
+        );
         if (htmlTemplate) {
           patches.push({
             start: pathRef.node.start,
@@ -2081,16 +2097,188 @@ function normalizePlaceholderWrappedDoubleQuotes(text) {
  * @returns {string|null} 模板字面量源码，无法安全处理时返回 null
  */
 function buildHtmlStringTranslateTemplateLiteral(text, translator) {
-  if (/[`\\]|\$\{/.test(text)) return null;
-
-  const match = text.match(
-    /^<([a-zA-Z][\w:-]*)([^>]*)>([^<>]*[\u3400-\u9fff][^<>]*)<\/\1>$/,
+  return buildHtmlTemplateLiteralFromParts(
+    [{ type: "text", value: text }],
+    translator,
   );
-  if (!match) return null;
+}
 
-  const [, tagName, attrs, innerText] = match;
-  const translated = buildTranslateCallSource(translator, innerText);
-  return "`<" + tagName + attrs + ">${" + translated + "}</" + tagName + ">`";
+/**
+ * 将含动态插值的 HTML 模板字面量按文本节点转换，保留标签、属性和表达式。
+ * @param {object} node - Babel TemplateLiteral 节点
+ * @param {string} translator - 翻译函数名
+ * @returns {string|null} 转换后的模板字面量源码，无法安全处理时返回 null
+ */
+function buildHtmlTranslateTemplateLiteral(node, translator) {
+  const parts = [];
+  node.quasis.forEach((quasi, index) => {
+    parts.push({ type: "text", value: quasi.value.cooked || "" });
+    if (index < node.expressions.length) {
+      parts.push({
+        type: "expression",
+        value: generate(node.expressions[index], {
+          jsescOption: { minimal: true },
+        }).code,
+      });
+    }
+  });
+
+  return buildHtmlTemplateLiteralFromParts(parts, translator);
+}
+
+/**
+ * 扫描 HTML 片段中的文本节点并生成带翻译插值的模板字面量。
+ * @param {Array} parts - 模板字面量的静态文本和表达式片段
+ * @param {string} translator - 翻译函数名
+ * @returns {string|null} 转换后的模板字面量源码，无法安全处理时返回 null
+ */
+function buildHtmlTemplateLiteralFromParts(parts, translator) {
+  const expressionSources = parts
+    .filter((part) => part.type === "expression")
+    .map((part) => part.value);
+  const expressionTokens = buildHtmlExpressionTokens(parts);
+  if (!expressionTokens || /[`\\]/.test(expressionTokens.source)) return null;
+
+  const prefix = '<div data-kd-i18n-wrapper="true">';
+  const suffix = "</div>";
+  const templateSource = prefix + expressionTokens.source + suffix;
+  const compileResult = compileTemplate({
+    filename: "kd-i18n-html-fragment.vue",
+    prettify: false,
+    source: templateSource,
+    compilerOptions: {
+      outputSourceRange: true,
+    },
+  });
+  if (compileResult.errors.length > 0 || !compileResult.ast) return null;
+  if (!compileResult.ast.children.some((node) => node.type === 1)) return null;
+
+  const patches = [];
+  let hasTranslatedText = false;
+  walkHtmlTemplateAst(compileResult.ast, (node) => {
+    if (node.type !== 3 || node.start == null || node.end == null) return;
+    const translated = translateHtmlTextNode(
+      templateSource.slice(node.start, node.end),
+      translator,
+      expressionSources,
+    );
+    if (!translated.changed) return;
+    hasTranslatedText = true;
+    patches.push({
+      start: node.start,
+      end: node.end,
+      code: translated.code,
+    });
+  });
+
+  if (!hasTranslatedText) return null;
+  const transformedSource = renderHtmlTemplatePart(
+    applyPatches(templateSource, patches).slice(prefix.length, -suffix.length),
+    expressionSources,
+  );
+  return "`" + transformedSource + "`";
+}
+
+/**
+ * 为 HTML 模板静态片段创建不会触发 Vue 语法解析的动态表达式标记。
+ * @param {Array} parts - 模板字面量的静态文本和表达式片段
+ * @returns {{source: string}|null} 带标记的 HTML 源码
+ */
+function buildHtmlExpressionTokens(parts) {
+  let expressionIndex = 0;
+  let source = "";
+  parts.forEach((part) => {
+    if (part.type === "text") {
+      source += part.value;
+      return;
+    }
+    source += `\x00KDI18NHTML${expressionIndex}\x00`;
+    expressionIndex += 1;
+  });
+
+  if (!source.includes("<")) return null;
+  return { source };
+}
+
+/**
+ * 遍历 Vue 2 模板 AST 的所有后代节点。
+ * @param {object} node - Vue 模板 AST 节点
+ * @param {Function} visit - 节点访问函数
+ * @returns {void}
+ */
+function walkHtmlTemplateAst(node, visit) {
+  visit(node);
+  if (!node.children) return;
+  node.children.forEach((child) => {
+    walkHtmlTemplateAst(child, visit);
+  });
+}
+
+/**
+ * 将 HTML 文本节点中的动态表达式标记还原为模板字面量插值。
+ * @param {string} text - HTML 源码片段
+ * @param {Array<string>} expressionSources - 动态表达式源码
+ * @returns {string} 替换后的 HTML 源码片段
+ */
+function renderHtmlTemplatePart(text, expressionSources) {
+  return text.replace(
+    /\x00KDI18NHTML(\d+)\x00/g,
+    (_, index) => `\${${expressionSources[Number(index)]}}`,
+  );
+}
+
+/**
+ * 将 HTML 文本节点中的静态中文和动态表达式分别渲染。
+ * @param {string} text - HTML 文本节点源码
+ * @param {string} translator - 翻译函数名
+ * @param {Array<string>} expressionSources - 动态表达式源码
+ * @returns {object} 转换结果 { changed, code }
+ */
+function translateHtmlTextNode(text, translator, expressionSources) {
+  const tokenPattern = /\x00KDI18NHTML(\d+)\x00/g;
+  let lastIndex = 0;
+  let changed = false;
+  let code = "";
+  let match;
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    const staticText = text.slice(lastIndex, match.index);
+    const translated = translateHtmlStaticText(staticText, translator);
+    code += translated.code;
+    changed ||= translated.changed;
+    code += `\${${expressionSources[Number(match[1])]}}`;
+    lastIndex = match.index + match[0].length;
+  }
+
+  const translated = translateHtmlStaticText(text.slice(lastIndex), translator);
+  code += translated.code;
+  changed ||= translated.changed;
+
+  return { changed, code };
+}
+
+/**
+ * 将 HTML 文本节点中的一个静态片段转换为翻译插值，并保留外围空白。
+ * @param {string} text - 静态文本片段
+ * @param {string} translator - 翻译函数名
+ * @returns {object} 转换结果 { changed, code }
+ */
+function translateHtmlStaticText(text, translator) {
+  if (!containsChinese(text)) return { changed: false, code: text };
+
+  const leading = text.match(/^\s*/)[0];
+  const trailing = text.match(/\s*$/)[0];
+  const contentEnd = text.length - trailing.length;
+  const content = text.slice(leading.length, contentEnd);
+  if (!content || !containsChinese(content)) {
+    return { changed: false, code: text };
+  }
+
+  const normalized = normalizeTemplateTextForTranslate(content);
+  return {
+    changed: true,
+    code: `${leading}\${${buildTranslateCallSource(translator, normalized)}}${trailing}`,
+  };
 }
 
 /**
@@ -2405,6 +2593,149 @@ function shouldSkipFile(relativePath, config) {
  */
 function containsChinese(text) {
   return /[\u3400-\u9fff]/.test(text);
+}
+
+/**
+ * 在注释外执行历史国际化产物清理，确保注释内容完全不参与清理。
+ * @param {string} code - 源码
+ * @returns {string} 清理后的源码
+ */
+function cleanupTranslateArtifactsOutsideComments(code) {
+  return withSourceCommentsMasked(code, (source) =>
+    unwrapDisplayNameChineseFieldTranslate(
+      unwrapDisplayNameLabelFirstArgTranslate(
+        unwrapNestedDisplayNameLabelCalls(
+          unwrapNestedTranslateCalls(normalizeMultilineTranslateCalls(source)),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * 在注释外执行 displayName 专项转换，避免注释示例触发表单配置注入。
+ * @param {string} code - Vue 文件完整源码
+ * @param {object} sfc - @vue/compiler-sfc 解析结果
+ * @returns {{ changed: boolean, replacements: number, code: string }} 转换结果
+ */
+function transformDisplayNameOutsideComments(code, sfc) {
+  let replacements = 0;
+  const nextCode = withSourceCommentsMasked(code, (source) => {
+    const result = transformDisplayName(source, sfc);
+    replacements = result.replacements;
+    return result.code;
+  });
+  return {
+    changed: nextCode !== code,
+    replacements,
+    code: nextCode,
+  };
+}
+
+/**
+ * 临时遮蔽源码注释并在处理后原样恢复，避免正则型清理误碰注释。
+ * @param {string} source - 源码
+ * @param {Function} transform - 对遮蔽后源码执行的转换函数
+ * @returns {string} 恢复注释后的源码
+ */
+function withSourceCommentsMasked(source, transform) {
+  const comments = [];
+  const masked = maskSourceComments(source, comments);
+  let result = transform(masked);
+  comments.forEach((comment, index) => {
+    result = result.split(`\x00KDCMT${index}\x00`).join(comment);
+  });
+  return result;
+}
+
+/**
+ * 将源码中的行注释、块注释和 HTML 注释替换为占位符。
+ * @param {string} source - 源码
+ * @param {string[]} comments - 收集到的注释内容
+ * @returns {string} 遮蔽后的源码
+ */
+function maskSourceComments(source, comments) {
+  let result = "";
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (quote) {
+      result += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      result += char;
+      continue;
+    }
+
+    if (source.startsWith("<!--", i)) {
+      const end = source.indexOf("-->", i + 4);
+      if (end === -1) {
+        result += source.slice(i);
+        break;
+      }
+      result += pushCommentPlaceholder(source.slice(i, end + 3), comments);
+      i = end + 2;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      const end = findLineEndIndex(source, i + 2);
+      result += pushCommentPlaceholder(source.slice(i, end), comments);
+      i = end - 1;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      if (end === -1) {
+        result += source.slice(i);
+        break;
+      }
+      result += pushCommentPlaceholder(source.slice(i, end + 2), comments);
+      i = end + 1;
+      continue;
+    }
+
+    result += char;
+  }
+
+  return result;
+}
+
+/**
+ * 保存注释并返回占位符。
+ * @param {string} comment - 注释源码
+ * @param {string[]} comments - 注释收集数组
+ * @returns {string} 注释占位符
+ */
+function pushCommentPlaceholder(comment, comments) {
+  const placeholder = `\x00KDCMT${comments.length}\x00`;
+  comments.push(comment);
+  return placeholder;
+}
+
+/**
+ * 查找当前行结尾位置。
+ * @param {string} source - 源码
+ * @param {number} start - 起始查找位置
+ * @returns {number} 行尾索引
+ */
+function findLineEndIndex(source, start) {
+  const nextLf = source.indexOf("\n", start);
+  const nextCr = source.indexOf("\r", start);
+  if (nextLf === -1) return nextCr === -1 ? source.length : nextCr;
+  if (nextCr === -1) return nextLf;
+  return Math.min(nextLf, nextCr);
 }
 
 /**
@@ -2772,16 +3103,8 @@ function cleanupI18n(projectRoot, config) {
     if (code !== beforeDeescape) fixCount += 1;
 
     const beforeTranslateCleanup = code;
-    code = normalizeMultilineTranslateCalls(code);
+    code = cleanupTranslateArtifactsOutsideComments(code);
     if (code !== beforeTranslateCleanup) fixCount += 1;
-
-    const beforeDisplayNameCleanup = code;
-    code = unwrapDisplayNameChineseFieldTranslate(
-      unwrapDisplayNameLabelFirstArgTranslate(
-        unwrapNestedDisplayNameLabelCalls(unwrapNestedTranslateCalls(code)),
-      ),
-    );
-    if (code !== beforeDisplayNameCleanup) fixCount += 1;
 
     if (shouldSkipFile(relativePath, config)) {
       if (fixCount > 0) {
@@ -2805,24 +3128,30 @@ function cleanupI18n(projectRoot, config) {
 
     // 1. 兜底还原 displayName 中文侧字段，避免其它修复步骤后残留 t()
     const beforeDisplayNameFieldCleanup = code;
-    code = unwrapDisplayNameChineseFieldTranslate(code);
+    code = withSourceCommentsMasked(code, unwrapDisplayNameChineseFieldTranslate);
     if (code !== beforeDisplayNameFieldCleanup) fixCount += 1;
 
     // 2. 移除重复的 import { t } from "@/languages" 语句
     const importRegex =
       /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/g;
-    const importMatches = code.match(importRegex);
-    if (importMatches && importMatches.length > 1) {
+    let removedDuplicateImports = 0;
+    const importCleanedCode = withSourceCommentsMasked(code, (source) => {
+      const importMatches = source.match(importRegex);
+      if (!importMatches || importMatches.length <= 1) return source;
       // 保留第一个，移除其余
       let firstKept = false;
-      code = code.replace(importRegex, (match) => {
+      removedDuplicateImports = importMatches.length - 1;
+      return source.replace(importRegex, (match) => {
         if (!firstKept) {
           firstKept = true;
           return match;
         }
         return "";
       });
-      fixCount += importMatches.length - 1;
+    });
+    if (importCleanedCode !== code) {
+      code = importCleanedCode;
+      fixCount += removedDuplicateImports;
     }
 
     // 2.5 移除 Vue 文件中不必要的 import { t } from "@/languages"
@@ -2831,12 +3160,19 @@ function cleanupI18n(projectRoot, config) {
     // 仅当 script 区域存在独立的 t() 调用（非 this.t()）时才需要 import
     if (ext === ".vue") {
       const scriptContent = extractScriptContent(code);
+      const maskedScriptContent = scriptContent
+        ? maskSourceComments(scriptContent, [])
+        : null;
       const hasStandaloneT =
-        scriptContent && /(?<!this\.)\bt\(/.test(scriptContent);
+        maskedScriptContent && /(?<!this\.)\bt\(/.test(maskedScriptContent);
       const importCheckRegex =
         /import\s*\{\s*t\s*\}\s*from\s*["']@\/languages["'];?\n?/;
-      if (!hasStandaloneT && importCheckRegex.test(code)) {
-        code = code.replace(importCheckRegex, "").replace(/\n{3,}/g, "\n\n");
+      const unusedImportCleanedCode = withSourceCommentsMasked(code, (source) => {
+        if (hasStandaloneT || !importCheckRegex.test(source)) return source;
+        return source.replace(importCheckRegex, "").replace(/\n{3,}/g, "\n\n");
+      });
+      if (unusedImportCleanedCode !== code) {
+        code = unusedImportCleanedCode;
         fixCount += 1;
       }
     }

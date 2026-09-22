@@ -113,7 +113,31 @@ function stripMultiLineComments(content) {
  * @returns {string} 去除注释后的内容
  */
 function stripInlineComments(line) {
-  return line.replace(/\/\/.*$/g, "");
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      return line.slice(0, i);
+    }
+  }
+
+  return line;
 }
 
 /**

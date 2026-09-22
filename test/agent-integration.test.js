@@ -225,3 +225,37 @@ test("write_file 禁止创建 layout-header 备选路径", async () => {
   assert.ok(result.timeline[0].result.includes("禁止创建文件"));
   assert.ok(!fs.existsSync(path.join(dir, "src/layouts/index.vue")));
 });
+
+test("write_file 大文件完整写入后继续执行", async () => {
+  const dir = createTempProject({
+    "src/large.vue": "<template><div>旧内容</div></template>\n",
+  });
+  const tools = createTools(dir, CONFIG);
+
+  const client = createMockClient([
+    assistantResponse([
+      toolCall("c1", "write_file", {
+        relativePath: "src/large.vue",
+        content: `<template>${"确认".repeat(7000)}</template>`,
+      }),
+    ]),
+    assistantResponse([
+      toolCall("c2", "scan_chinese"),
+    ]),
+    finishResponse("继续完成"),
+  ]);
+
+  const result = await runAgentLoop(
+    client,
+    "test-model",
+    "system prompt",
+    tools,
+    { maxSteps: 10 },
+  );
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.timeline[0].action, "write_file");
+  assert.strictEqual(result.timeline[1].action, "scan_chinese");
+  const content = fs.readFileSync(path.join(dir, "src/large.vue"), "utf8");
+  assert.ok(content.includes("确认".repeat(7000)));
+});

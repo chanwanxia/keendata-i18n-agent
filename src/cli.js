@@ -89,6 +89,7 @@ function parseArgs(argv) {
     "--appid-env",
     "--appkey-env",
     "--decision-mode",
+    "--mode",
     "--max-steps",
     "--max-tool-calls",
   ];
@@ -117,7 +118,11 @@ function parseArgs(argv) {
     if (valueFlags.includes(item)) {
       const key = toCamel(item);
       const value = rest[i + 1];
-      flags[key] = numericFlags.has(item) ? Number(value) : value;
+      if (item === "--mode") {
+        flags.decisionMode = value;
+      } else {
+        flags[key] = numericFlags.has(item) ? Number(value) : value;
+      }
       i += 1;
     }
   }
@@ -217,7 +222,8 @@ function printHelp() {
   --provider NAME                       翻译 provider，可选 llm / glossary / baidu / command
   --appid-env ENV                       百度翻译 appid 的环境变量名
   --appkey-env ENV                      百度翻译 appkey 的环境变量名
-  --decision-mode MODE                  决策模式，可选 llm（默认，LLM 驱动）/ rule（旧规则引擎回退）
+  --decision-mode MODE                  决策模式，可选 deterministic/rule（确定性快速路径）/ llm（LLM agent 调度）
+  --mode MODE                           --decision-mode 的别名
   --max-steps N                         最大决策步数（0=自动模式，不限步数直到完成，默认）
   --no-resume                           不从 checkpoint 恢复，从头开始执行（自动清除旧 checkpoint）
   --max-tool-calls N                    最大工具调用次数（--max-steps 的别名）

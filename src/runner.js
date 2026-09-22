@@ -3,7 +3,9 @@ const path = require("path");
 const kit = require("./kit");
 const { decideNextAction } = require("./policy");
 const { runAgent: runLlmAgent } = require("./agent");
-const { createLlmClient } = require("./llm");
+
+/** 确定性模式默认安全步数上限，防止策略状态异常导致空转 */
+const DEFAULT_DETERMINISTIC_MAX_STEPS = 80;
 
 /**
  * 执行 agent 全流程
@@ -14,47 +16,23 @@ const { createLlmClient } = require("./llm");
  */
 async function runAgent(projectRoot, agentConfig, flags = {}) {
   // LLM 模式：委托给 agent 模块，由 tool-calling loop 驱动
-  if (agentConfig.decisionMode !== "rule") {
+  if (agentConfig.decisionMode === "llm") {
     return runLlmAgent(projectRoot, agentConfig, flags);
   }
 
-  // rule 模式：保留旧的规则引擎 + executeAction 逻辑
-  const llmClient = createLlmClient(agentConfig);
+  // deterministic/rule 模式：仅按本地策略和确定性工具执行；翻译步骤可单独使用 LLM provider。
   const state = createInitialState(projectRoot, agentConfig, flags);
+  const maxSteps = resolveDeterministicMaxSteps(agentConfig.maxSteps);
 
-  for (let step = 0; step < agentConfig.maxSteps; step += 1) {
+  for (let step = 0; step < maxSteps; step += 1) {
     state.stepCount = step + 1;
 
-    const suggestion = decideNextAction(state);
-    const allowedActions = [
-      "init_config",
-      "create_translation_file",
-      "scaffold",
-      "inject",
-      "check_cli",
-      "doctor",
-      "scan",
-      "apply",
-      "extract",
-      "translate",
-      "glossary_repair",
-      "validate",
-      "compile",
-      "finish",
-      "stop",
-    ];
-
-    const decision = await maybeDecideWithLlm(
-      llmClient,
-      state,
-      suggestion,
-      allowedActions,
-    );
-    const action = allowedActions.includes(decision.action)
-      ? decision.action
-      : suggestion.action;
-    const reason = decision.reason || suggestion.reason;
-    state.timeline.push({ step: state.stepCount, action, reason });
+    const decision = decideNextAction(state);
+    const action = decision.action;
+    const reason = decision.reason;
+    const actionStart = Date.now();
+    const timelineItem = { step: state.stepCount, action, reason };
+    state.timeline.push(timelineItem);
 
     if (action === "finish") {
       return finalizeState(state, true, "agent 流程执行完成");
@@ -64,12 +42,23 @@ async function runAgent(projectRoot, agentConfig, flags = {}) {
     }
 
     const execution = await executeAction(action, state, flags);
+    timelineItem.elapsedMs = Date.now() - actionStart;
     if (execution && execution.stop) {
       return finalizeState(state, execution.ok, execution.message);
     }
   }
 
   return finalizeState(state, false, "超过最大步骤数，agent 主动停止");
+}
+
+/**
+ * 解析确定性模式最大步数；0/未配置表示使用本地安全默认值。
+ * @param {number|undefined} configuredMax - 配置的最大步数
+ * @returns {number} 实际步数上限
+ */
+function resolveDeterministicMaxSteps(configuredMax) {
+  if (!configuredMax || configuredMax <= 0) return DEFAULT_DETERMINISTIC_MAX_STEPS;
+  return configuredMax;
 }
 
 /**
@@ -105,6 +94,7 @@ function createInitialState(projectRoot, agentConfig, flags) {
       checkCli: null,
       doctor: null,
       scan: null,
+      postApplyScan: null,
       apply: null,
       extract: null,
       translate: null,
@@ -113,38 +103,6 @@ function createInitialState(projectRoot, agentConfig, flags) {
       generated: null,
     },
   };
-}
-
-/**
- * 如果启用了 LLM 决策模式，用 LLM 决定下一步动作
- * @param {object} llmClient - LLM 客户端
- * @param {object} state - 当前状态
- * @param {object} suggestion - 规则引擎的建议
- * @param {string[]} allowedActions - 允许的动作列表
- * @returns {object} 决策结果
- */
-async function maybeDecideWithLlm(
-  llmClient,
-  state,
-  suggestion,
-  allowedActions,
-) {
-  if (!llmClient) return suggestion;
-
-  try {
-    const decision = await llmClient.decide({
-      state: summarizeStateForDecision(state),
-      suggestedAction: suggestion,
-      allowedActions,
-    });
-    if (!decision || !decision.action) return suggestion;
-    return decision;
-  } catch (error) {
-    return {
-      ...suggestion,
-      reason: `${suggestion.reason}（LLM 决策失败，已回退规则模式：${error.message}）`,
-    };
-  }
 }
 
 /**
@@ -264,9 +222,14 @@ async function executeAction(action, state, flags) {
   }
 
   if (action === "scan") {
-    state.results.scan = kit.scanHardcodedChinese(projectRoot, config);
+    const report = kit.scanHardcodedChinese(projectRoot, config);
+    if (state.results.apply && !state.results.postApplyScan) {
+      state.results.postApplyScan = report;
+    } else {
+      state.results.scan = report;
+    }
     console.log(
-      `[i18n-agent] scan: 发现 ${state.results.scan.summary.candidateCount} 处待国际化文案`,
+      `[i18n-agent] scan: 发现 ${report.summary.candidateCount} 处待国际化文案`,
     );
     return null;
   }
@@ -329,14 +292,9 @@ async function executeAction(action, state, flags) {
 
   if (action === "validate") {
     const report = kit.validateTranslations(projectRoot, config);
-    const generated = kit.inspectGeneratedFiles(projectRoot, config);
-    state.results.validate = {
-      ...report,
-      generated,
-      ok: report.ok && generated.ok,
-    };
+    state.results.validate = report;
     console.log(
-      `[i18n-agent] validate: ${report.summary.missingLanguageCount} 个缺失翻译, ${report.summary.issueCount} 个翻译问题, 产物${generated.ok ? "完整" : "缺失"}`,
+      `[i18n-agent] validate: ${report.summary.missingLanguageCount} 个缺失翻译, ${report.summary.issueCount} 个翻译问题`,
     );
     return null;
   }
@@ -369,44 +327,6 @@ async function executeAction(action, state, flags) {
  }
 
   return null;
-}
-
-/**
- * 将状态摘要为 LLM 决策可用的格式
- * @param {object} state - 当前状态
- * @returns {object} 状态摘要
- */
-function summarizeStateForDecision(state) {
-  return {
-    stepCount: state.stepCount,
-    bootstrap: state.bootstrap,
-    repairs: state.repairs,
-    results: {
-      scaffold: summarizeResult(state.results.scaffold),
-      inject: summarizeResult(state.results.inject),
-      checkCli: summarizeResult(state.results.checkCli),
-      doctor: summarizeResult(state.results.doctor),
-      scan: summarizeResult(state.results.scan),
-      apply: summarizeResult(state.results.apply),
-      extract: summarizeResult(state.results.extract),
-      translate: summarizeResult(state.results.translate),
-      validate: summarizeResult(state.results.validate),
-      compile: summarizeResult(state.results.compile),
-      generated: summarizeResult(state.results.generated),
-    },
-  };
-}
-
-/**
- * 摘要单个结果
- * @param {object} result - 结果对象
- * @returns {object} 摘要
- */
-function summarizeResult(result) {
-  if (!result) return null;
-  if (result.summary) return { summary: result.summary, ok: result.ok };
-  if (typeof result.ok === "boolean") return result;
-  return result;
 }
 
 /**

@@ -64,6 +64,15 @@ function decideNextAction(state) {
   if (!state.results.apply) {
     return { action: "apply", reason: "执行自动改写（中文包裹、label-width 转换、isRtl 样式等）" };
   }
+  if (!state.results.postApplyScan) {
+    return { action: "scan", reason: "复扫 apply 后的残留中文" };
+  }
+  if (state.results.postApplyScan.summary.candidateCount > 0) {
+    return {
+      action: "stop",
+      reason: `apply 后仍有 ${state.results.postApplyScan.summary.candidateCount} 处疑似未国际化中文，请补充 apply_i18n 确定性转换后重试`,
+    };
+  }
   if (!state.results.extract) return { action: "extract", reason: "提取词条" };
   if (!state.results.translate) return { action: "translate", reason: "执行翻译" };
   if (

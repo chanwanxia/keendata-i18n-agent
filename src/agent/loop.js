@@ -46,6 +46,9 @@ function formatToolResult(toolName, result) {
         : `读取 ${result.relativePath} (${(result.content || "").length} 字符)`;
 
     case "write_file":
+      if (result.skipped) {
+        return `跳过写入 ${result.relativePath}: ${result.reason || "策略限制"}`;
+      }
       return result.written
         ? `写入 ${result.relativePath} (${result.bytes} 字节)`
         : "写入失败";
@@ -305,6 +308,31 @@ function trimContext(messages) {
 }
 
 /**
+ * 给工具结果附加非序列化耗时，供日志和 timeline 使用。
+ * @param {object} result - 工具执行结果
+ * @param {number} toolStart - 工具开始时间戳
+ * @returns {object} 附加耗时后的结果
+ */
+function attachToolTiming(result, toolStart) {
+  if (!result || typeof result !== "object") return result;
+  Object.defineProperty(result, "__toolElapsedMs", {
+    value: Date.now() - toolStart,
+    enumerable: false,
+    configurable: true,
+  });
+  return result;
+}
+
+/**
+ * 将毫秒格式化为一位小数秒数。
+ * @param {number} ms - 毫秒
+ * @returns {string} 秒数字符串
+ */
+function formatSeconds(ms) {
+  return (ms / 1000).toFixed(1);
+}
+
+/**
  * 检测连续相同工具调用（死循环检测）
  * @param {object[]} recentCalls - 最近几次调用的 { tool, argsHash } 数组
  * @returns {boolean} 是否检测到死循环
@@ -531,6 +559,7 @@ async function runAgentLoop(
         timeline,
       };
     }
+    const llmElapsedMs = Date.now() - stepStart;
 
     const message =
       response &&
@@ -640,6 +669,7 @@ async function runAgentLoop(
           result = { error: `工具参数 JSON 解析失败: ${err.message}` };
         }
         if (!result) {
+          const toolStart = Date.now();
           try {
             result = await tool.execute(args);
           } catch (err) {
@@ -647,26 +677,35 @@ async function runAgentLoop(
               error: err && err.message ? err.message : String(err),
             };
           }
+          result = attachToolTiming(result, toolStart);
         }
       }
 
-      let resultJson;
       try {
-        resultJson = JSON.stringify(result);
+        JSON.stringify(result);
       } catch (err) {
         result = {
           error: `工具 ${
             toolName || "未命名工具"
           } 返回结果无法序列化: ${err.message}`,
         };
-        resultJson = JSON.stringify(result);
       }
+      let toolElapsedMs =
+        result && typeof result.__toolElapsedMs === "number"
+          ? result.__toolElapsedMs
+          : 0;
+      if (result && typeof result === "object") {
+        delete result.__toolElapsedMs;
+      }
+
+      let resultJson = JSON.stringify(result);
       if (!resultJson) {
         result = {
           error: `工具 ${
             toolName || "未命名工具"
           } 返回了无法序列化的结果`,
         };
+        toolElapsedMs = 0;
         resultJson = JSON.stringify(result);
       }
       messages.push({
@@ -675,21 +714,28 @@ async function runAgentLoop(
         content: resultJson,
       });
 
+      const totalElapsedMs = Date.now() - stepStart;
       timeline.push({
         step: step + 1,
         action: toolName,
         reason: functionCall.arguments || "{}",
         result: resultJson.slice(0, 500),
+        llmElapsedMs,
+        toolElapsedMs,
+        totalElapsedMs,
       });
 
-      const toolElapsed = ((Date.now() - stepStart) / 1000).toFixed(1);
       const summary = formatToolResult(toolName, result);
       const stepDisplay =
         estimatedTotal > 0
           ? `${step + 1}/~${estimatedTotal}`
           : `${step + 1}`;
       console.log(
-        `[i18n-agent] [${stepDisplay}] ${toolName} → ${summary} (${toolElapsed}s)`,
+        `[i18n-agent] [${stepDisplay}] ${toolName} → ${summary} (llm ${formatSeconds(
+          llmElapsedMs,
+        )}s, tool ${formatSeconds(toolElapsedMs)}s, total ${formatSeconds(
+          totalElapsedMs,
+        )}s)`,
       );
 
       const fatalReason = getFatalToolFailure(toolName, result);

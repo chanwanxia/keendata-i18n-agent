@@ -125,37 +125,45 @@ const title = "\u4e2d\u6587\u540d";`,
   assert.ok(content.includes('const title = "中文名";'), `普通中文 Unicode 仍应还原，实际: ${content}`);
 });
 
-test("write_file 拒绝删除已有注释", () => {
+test("write_file 不因注释差异中断写入", () => {
   const dir = createTempProject({
-    "src/index.vue": `<script>
-export default {
-  methods: {
-    // 上线/下线的popConfig
-    linePopConfig() {
-      return "确认";
-    },
-  },
-};
-</script>`,
+    "src/index.vue": `<template>
+<!--      <div class="sdtitle">-->
+<div>确认</div>
+</template>`,
   });
   const tools = createTools(dir, CONFIG);
   const writeTool = tools.find((t) => t.name === "write_file");
   const result = writeTool.execute({
     relativePath: "src/index.vue",
-    content: `<script>
-export default {
-  methods: {
-    linePopConfig() {
-      return this.t("确认");
-    },
-  },
-};
-</script>`,
+    content: `<template>
+<div>{{ t("确认") }}</div>
+</template>`,
   });
   const content = fs.readFileSync(path.join(dir, "src/index.vue"), "utf8");
-  assert.ok(result.error);
-  assert.match(result.error, /删除了已有注释/);
-  assert.ok(content.includes("// 上线/下线的popConfig"));
+  assert.strictEqual(result.written, true);
+  assert.ok(content.includes('t("确认")'));
+});
+
+test("write_file 支持大文件完整写入", () => {
+  const dir = createTempProject({
+    "src/large.vue": `<template><div>旧内容</div></template>`,
+  });
+  const tools = createTools(dir, CONFIG);
+  const writeTool = tools.find((t) => t.name === "write_file");
+  const nextContent = `<template>
+${'<section class="row">无关内容</section>\n'.repeat(700)}
+<el-button>{{ t("确认") }}</el-button>
+</template>`;
+  const result = writeTool.execute({
+    relativePath: "src/large.vue",
+    content: nextContent,
+  });
+  const content = fs.readFileSync(path.join(dir, "src/large.vue"), "utf8");
+  assert.strictEqual(result.written, true);
+  assert.ok(content.includes('{{ t("确认") }}'));
+  assert.ok(content.includes("无关内容"));
+  assert.strictEqual(content, nextContent);
 });
 
 test("write_file 拒绝创建不存在的文件", () => {

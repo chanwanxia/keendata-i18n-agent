@@ -22,6 +22,16 @@ const DEFAULT_AGENT_CONFIG = {
 };
 
 /**
+ * 归一化决策模式，保留 rule 作为 deterministic 的兼容别名。
+ * @param {string|undefined} mode - 配置或命令行传入的模式
+ * @returns {string} llm 或 deterministic
+ */
+function normalizeDecisionMode(mode) {
+  if (mode === "rule" || mode === "deterministic") return "deterministic";
+  return "llm";
+}
+
+/**
  * 解析目标项目根路径，默认使用当前工作目录
  * @param {string} projectArg - 项目路径参数
  * @returns {string} 项目根路径
@@ -63,6 +73,7 @@ function loadAgentConfig(projectRoot, flags = {}) {
   if (typeof flags.autoScaffold === "boolean") merged.autoScaffold = flags.autoScaffold;
   if (typeof flags.autoInject === "boolean") merged.autoInject = flags.autoInject;
 
+  merged.decisionMode = normalizeDecisionMode(merged.decisionMode);
   return merged;
 }
 
@@ -70,5 +81,6 @@ module.exports = {
   AGENT_CONFIG_FILE,
   DEFAULT_AGENT_CONFIG,
   loadAgentConfig,
+  normalizeDecisionMode,
   resolveProjectRoot,
 };

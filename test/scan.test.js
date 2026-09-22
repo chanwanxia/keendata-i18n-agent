@@ -104,6 +104,31 @@ test("多行 HTML 注释中的中文被跳过", () => {
   );
 });
 
+test("行内注释中的中文被跳过", () => {
+  const projectRoot = createTempProject({
+    "src/test.js": `const value = 1; // 这里是中文注释`,
+  });
+
+  const result = scanHardcodedChinese(projectRoot, CONFIG);
+  assert.strictEqual(
+    result.summary.candidateCount,
+    0,
+    "行内注释中的中文不应出现在候选中",
+  );
+});
+
+test("字符串里的双斜杠不被当成行内注释", () => {
+  const projectRoot = createTempProject({
+    "src/test.js": `const url = "http://example.com/中文路径";`,
+  });
+
+  const result = scanHardcodedChinese(projectRoot, CONFIG);
+  assert.ok(
+    result.summary.candidateCount > 0,
+    "字符串中的 // 不应截断后续中文扫描",
+  );
+});
+
 test("未包裹的中文被检测", () => {
   const projectRoot = createTempProject({
     "src/test.vue": `<template><div>未翻译文本</div></template>`,

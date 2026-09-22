@@ -215,6 +215,85 @@ test("简单 HTML 模板字面量只转换文本节点", () => {
   assert.ok(result.includes('import { t } from "@/languages"'));
 });
 
+test("多层 HTML 模板字面量按文本节点转换并保留动态插值", () => {
+  const source = [
+    "const message = `",
+    '<div style="display: flex; font-size: 12px;justify-content: center">',
+    "  <div>",
+    "    <div>租户：${source?.tenantName}</div>",
+    "    <div>项目：${source?.name}</div>",
+    "  </div>",
+    '  <div style="margin:0 8px;display: flex;align-items: center">',
+    '    <i class="el-icon-right"></i>',
+    "  </div>",
+    "  <div>",
+    "    <div>租户：${target?.tenantName}</div>",
+    "    <div>项目：${target?.name}</div>",
+    "  </div>",
+    "</div>",
+    '<div style="font-size: 12px;">共享数据表：${params.data?.count}</div>',
+    "`;",
+  ].join("\n");
+  const projectRoot = createTempProject({
+    "src/init-graph.js": source,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/init-graph.js"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes('${t("租户：")}${source?.tenantName}'),
+    `租户文本应独立转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('${t("项目：")}${source?.name}'),
+    `项目文本应独立转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('${t("共享数据表：")}${params.data?.count}'),
+    `统计文本应独立转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('<i class="el-icon-right"></i>'),
+    `HTML 标签和属性应保持原样，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("source?.tenantName") &&
+      result.includes("target?.name"),
+    `动态表达式应保持原样，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes('t(" <div'),
+    `不应将整段 HTML 转换为单个 t()，实际: ${result}`,
+  );
+  assert.ok(result.includes('import { t } from "@/languages"'));
+});
+
+test("HTML 模板字面量中的属性表达式保持为原始插值", () => {
+  const projectRoot = createTempProject({
+    "src/init-graph.js":
+      'const tooltip = `<div title="${title}">查看详情：${name}</div>`;',
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/init-graph.js"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes('<div title="${title}">'),
+    `属性中的动态表达式应保持原样，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('${t("查看详情：")}${name}'),
+    `文本节点应由 Vue AST 识别并转换，实际: ${result}`,
+  );
+});
+
 test("默认配置排除 src/assets 和 src/build", () => {
   const projectRoot = createTempProject({
     "src/app.js": `const title = "首页";`,
@@ -646,6 +725,40 @@ test("绑定属性中的三元 + 模板字面量正确转换，不破坏标签�
   );
 });
 
+test("range-separator 静态中文属性转换为 t()", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><el-date-picker range-separator="至"></el-date-picker></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(`:range-separator="t('至')"`),
+    `range-separator 应转换为绑定翻译，实际: ${result}`,
+  );
+});
+
+test("col-attrs 绑定对象中的中文转换为 t()", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><kd-table :col-attrs="{ label: '字段英文名称', width: 120 }"></kd-table></template>`,
+  });
+
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+
+  const result = fs.readFileSync(
+    path.join(projectRoot, "src/test.vue"),
+    "utf8",
+  );
+  assert.ok(
+    result.includes(`label: t('字段英文名称')`),
+    `col-attrs 对象中文应转换为 t()，实际: ${result}`,
+  );
+});
+
 test("绑定属性中比较运算符 > 不被误识别为文本节点边界", () => {
   const projectRoot = createTempProject({
     "src/test.vue": `<template><div :class="count > 0 ? '有数据' : '无数据'">{{ count > 0 ? '显示' : '隐藏' }}</div></template>`,
@@ -858,6 +971,29 @@ test("静态 style 的 left 属性转换为 right", () => {
   assert.ok(result.includes("'left'"), "LTR 分支应保留 left");
 });
 
+test("script 注释中的 RTL 示例不参与转换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>
+export default {
+  mounted() {
+    // this.$el.style.left = "left";
+    this.$el.style.left = "left";
+  },
+};
+</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes('// this.$el.style.left = "left";'),
+    `注释中的 RTL 示例不应转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('this.$el.style.left = this.isRtl ? "right" : "left";'),
+    `正文 RTL 赋值仍应转换，实际: ${result}`,
+  );
+});
+
 test("svg-icon 的 computed.margin 更新 RTL 顺序并保留四空格缩进", () => {
   const projectRoot = createTempProject({
     "src/components/svg-icon/index.vue": `<template><svg :style="iconStyle"/></template>
@@ -954,6 +1090,31 @@ test("Date.now() 替换为 this.tzDateNow()", () => {
   assert.ok(!result.includes("Date.now()"), "不应残留 Date.now()");
 });
 
+test("script 注释中的时区示例不参与转换", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>test</div></template><script>
+export default {
+  methods: {
+    getTime() {
+      // return Date.now();
+      return Date.now();
+    },
+  },
+};
+</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes("// return Date.now();"),
+    `注释中的时区示例不应转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("return this.tzDateNow();"),
+    `正文 Date.now() 仍应转换，实际: ${result}`,
+  );
+});
+
 test("new Date() 无参替换为 this.tzNewDate()", () => {
   const projectRoot = createTempProject({
     "src/test.vue": `<template><div>test</div></template><script>export default { methods: { getDate() { return new Date(); } } }</script>`,
@@ -1014,6 +1175,23 @@ test("独立 JS 文件中的时区变换", () => {
   assert.ok(result.includes("this.tzDateNow()"), "JS 文件中 Date.now() 也应替换");
 });
 
+test("独立 JS 文件注释中的时区示例不参与转换", () => {
+  const projectRoot = createTempProject({
+    "src/utils.js": `// return Date.now();
+export function getTime() { return Date.now(); }`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/utils.js"), "utf8");
+  assert.ok(
+    result.includes("// return Date.now();"),
+    `JS 注释中的 Date.now() 不应转换，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("return this.tzDateNow();"),
+    `JS 正文 Date.now() 仍应转换，实际: ${result}`,
+  );
+});
+
 test("HTML 注释原样保留不被清除", () => {
   const projectRoot = createTempProject({
     "src/test.vue": `<template><!-- 这是注释 --><div>实际内容</div></template>`,
@@ -1051,6 +1229,66 @@ export default {
   assert.ok(result.includes("// 上线/下线的popConfig"), `方法前注释应保留，实际: ${result}`);
   assert.ok(result.includes("// 上线/下线"), `后续方法前注释应保留，实际: ${result}`);
   assert.ok(result.includes('confirmText: this.t("确认")'), `业务文案仍应转换，实际: ${result}`);
+});
+
+test("注释中的历史 t 包裹示例不参与 cleanup", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template>
+<!-- {{ t(t('注释示例')) }} -->
+<div>{{ t(t('确认')) }}</div>
+</template>
+<script>
+export default {
+  mounted() {
+    // this.t(this.t("注释示例"))
+    const msg = this.t(this.t("确认"));
+    return msg;
+  },
+};
+</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(result.includes("<!-- {{ t(t('注释示例')) }} -->"), `HTML 注释不应参与 cleanup，实际: ${result}`);
+  assert.ok(result.includes('// this.t(this.t("注释示例"))'), `行注释不应参与 cleanup，实际: ${result}`);
+  assert.ok(result.includes("{{ t('确认') }}"), `template 正文应清理重复 t()，实际: ${result}`);
+  assert.ok(result.includes('const msg = this.t("确认");'), `script 正文应清理重复 this.t()，实际: ${result}`);
+});
+
+test("注释中的旧版 i18n 注入示例不参与 cleanup", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template><div>实际内容</div></template>
+<script>
+// import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";
+export default {
+  // mixins: [i18nMixin()],
+  // inject: ["isRtl"],
+  mounted() {
+    return "确认";
+  },
+};
+</script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes(
+      '// import { i18nMixin } from "@/languages/i18n-plugin/i18nMixin";',
+    ),
+    `注释中的旧 import 示例应保留，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("// mixins: [i18nMixin()],"),
+    `注释中的 mixins 示例应保留，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('// inject: ["isRtl"],'),
+    `注释中的 inject 示例应保留，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes('return this.t("确认");'),
+    `正文中文仍应转换，实际: ${result}`,
+  );
 });
 
 test("含中文的 HTML 注释保留且不翻译", () => {
@@ -1503,6 +1741,48 @@ test("el-form-item label 中的 t('中文名') 转换为 displayNameConfig 模�
   assert.ok(result.includes('realNameConfig.rules'), `应使用 realNameConfig.rules，实际: ${result}`);
   assert.ok(result.includes('realNameConfig: {}'), `data 中应有 realNameConfig: {}，实际: ${result}`);
   assert.ok(result.includes('this.realNameConfig = this.displayNameConfig'), `created 中应有 config 初始化，实际: ${result}`);
+});
+
+test("注释中的 displayName 示例不参与转换和配置注入", () => {
+  const projectRoot = createTempProject({
+    "src/test.vue": `<template>
+      <!-- <el-form-item :label="t('中文名')" prop="realName"><kd-input v-model="form.realName"></kd-input></el-form-item> -->
+      <div>实际内容</div>
+    </template>
+    <script>
+      export default {
+        data() {
+          return { form: {} };
+        },
+        methods: {
+          getLabel() {
+            // return this.t('中文名称');
+            return "实际脚本";
+          }
+        }
+      };
+    </script>`,
+  });
+  applyI18n(projectRoot, CONFIG, { dryRun: false });
+  const result = fs.readFileSync(path.join(projectRoot, "src/test.vue"), "utf8");
+  assert.ok(
+    result.includes(
+      `<!-- <el-form-item :label="t('中文名')" prop="realName"><kd-input v-model="form.realName"></kd-input></el-form-item> -->`,
+    ),
+    `HTML 注释应原样保留，实际: ${result}`,
+  );
+  assert.ok(
+    result.includes("// return this.t('中文名称');"),
+    `JS 注释应原样保留，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("realNameConfig"),
+    `注释中的 el-form-item 不应注入 displayNameConfig，实际: ${result}`,
+  );
+  assert.ok(
+    !result.includes("displayNameLabel('中文名')"),
+    `注释中的 t('中文名') 不应转换为 displayNameLabel，实际: ${result}`,
+  );
 });
 
 test("el-form-item label 中的 t('中文名称') 转换为 displayNameConfig 使用默认 chLabel", () => {
